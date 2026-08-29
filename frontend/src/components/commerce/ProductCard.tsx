@@ -21,7 +21,7 @@ export default function ProductCard({ product }: ProductCardProps) {
   return (
     <article className="group flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md">
       <Link
-        to={`/product/${product.slug}`}
+        to={`/product/${product.id}`}
         className="relative aspect-square overflow-hidden"
         aria-label={`View ${product.name}`}
       >
@@ -54,7 +54,7 @@ export default function ProductCard({ product }: ProductCardProps) {
           )}
         </div>
 
-        <Link to={`/product/${product.slug}`} className="mt-2 block">
+        <Link to={`/product/${product.id}`} className="mt-2 block">
           <h3 className="text-base font-semibold text-slate-950 line-clamp-1 group-hover:text-slate-700">
             {product.name}
           </h3>

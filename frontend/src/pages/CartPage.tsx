@@ -9,8 +9,8 @@ export default function CartPage() {
   const navigate = useNavigate();
 
   const handleCheckout = () => {
-    // Phase 7A: no transaction is created; preserve the in-memory cart.
-    navigate("/assistant");
+    // Phase 7B: navigate to trusted checkout preview
+    navigate("/checkout");
   };
 
   if (cart.itemCount === 0) {

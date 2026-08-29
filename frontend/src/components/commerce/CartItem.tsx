@@ -21,14 +21,14 @@ export default function CartItem({ item }: CartItemProps) {
 
   return (
     <div className="flex gap-4 py-4">
-      <Link to={`/product/${item.product.slug}`} className="relative h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-slate-100" aria-label={`View ${item.product.name}`}>
+      <Link to={`/product/${item.product.id}`} className="relative h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-slate-100" aria-label={`View ${item.product.name}`}>
         <img src={item.product.image} alt={item.product.name} className="h-full w-full object-cover" loading="lazy" />
       </Link>
 
       <div className="flex flex-1 flex-col">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <Link to={`/product/${item.product.slug}`} className="font-medium text-slate-950 hover:text-slate-700">
+            <Link to={`/product/${item.product.id}`} className="font-medium text-slate-950 hover:text-slate-700">
               {item.product.name}
             </Link>
             <p className="mt-0.5 text-sm text-slate-500">{item.product.merchant}</p>

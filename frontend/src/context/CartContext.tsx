@@ -1,4 +1,4 @@
-import { createContext, useContext, useReducer, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useReducer, type ReactNode } from "react";
 import type { Product, CartItem, CommerceCart } from "../types/commerce";
 
 type CartState = CommerceCart;
@@ -88,6 +88,24 @@ const initialState: CartState = {
   itemCount: 0,
 };
 
+const CART_STORAGE_KEY = "mandate-ledger-commerce-cart";
+
+function loadPersistedCart(): CartState {
+  if (typeof window === "undefined") return initialState;
+
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(CART_STORAGE_KEY) || "[]") as unknown;
+    if (!Array.isArray(parsed)) return initialState;
+    const items = parsed.filter((item): item is CartItem => {
+      const candidate = item as Partial<CartItem>;
+      return Boolean(candidate.product?.id) && candidate.quantity !== undefined && Number.isInteger(candidate.quantity) && candidate.quantity > 0;
+    }).map((item) => ({ ...item, quantity: Math.min(item.quantity, item.product.stock) })).filter((item) => item.quantity > 0);
+    return computeCart(items);
+  } catch {
+    return initialState;
+  }
+}
+
 const CartContext = createContext<{
   state: CartState;
   addItem: (product: Product, quantity?: number) => void;
@@ -99,7 +117,11 @@ const CartContext = createContext<{
 } | null>(null);
 
 export function CartProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(cartReducer, initialState);
+  const [state, dispatch] = useReducer(cartReducer, initialState, loadPersistedCart);
+
+  useEffect(() => {
+    window.sessionStorage.setItem(CART_STORAGE_KEY, JSON.stringify(state.items));
+  }, [state.items]);
 
   const addItem = (product: Product, quantity = 1) => dispatch({ type: "ADD_ITEM", product, quantity: Math.max(1, quantity) });
   const removeItem = (productId: string) => dispatch({ type: "REMOVE_ITEM", productId });

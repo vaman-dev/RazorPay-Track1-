@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Minus, Plus, ShieldCheck, Star, Truck, RotateCcw, Shield } from "lucide-react";
+import { ArrowLeft, ShieldCheck, Star, Truck, RotateCcw, Shield } from "lucide-react";
 import { getProductById } from "../services/commerceApi";
 import { useCart } from "../context/CartContext";
 import type { Product } from "../types/commerce";
+import QuantitySelector from "../components/commerce/QuantitySelector";
 
 function formatPrice(price: number): string {
   return new Intl.NumberFormat("en-IN", {
@@ -14,23 +15,23 @@ function formatPrice(price: number): string {
 }
 
 export default function ProductPage() {
-  const { slug } = useParams<{ slug: string }>();
+  const { productId } = useParams<{ productId: string }>();
   const [product, setProduct] = useState<Product | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [quantity, setQuantity] = useState(1);
   const { addItem } = useCart();
 
   useEffect(() => {
-    if (slug) {
+    if (productId) {
       setIsLoading(true);
       setProduct(null);
-      getProductById(slug).then((p) => {
+      getProductById(productId).then((p) => {
         if (p) setProduct(p);
       }).finally(() => {
         setIsLoading(false);
       });
     }
-  }, [slug]);
+  }, [productId]);
 
   if (!product) {
     return (
@@ -127,39 +128,7 @@ export default function ProductPage() {
                 Quantity
               </label>
               <div className="mt-2 flex items-center gap-3">
-                <div className="flex items-center border border-slate-200 rounded-xl">
-                  <button
-                    onClick={() => setQuantity((q) => Math.max(1, q - 1))}
-                    disabled={quantity <= 1}
-                    className="h-12 w-12 grid place-items-center text-slate-500 hover:text-slate-950 hover:bg-slate-50 rounded-l-xl transition disabled:cursor-not-allowed disabled:opacity-50"
-                    aria-label="Decrease quantity"
-                  >
-                    <Minus className="size-4" aria-hidden="true" />
-                  </button>
-                  <input
-                    id="quantity"
-                    type="number"
-                    value={quantity}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value, 10);
-                      if (!isNaN(val) && val >= 1 && val <= maxQuantity) {
-                        setQuantity(val);
-                      }
-                    }}
-                    min={1}
-                    max={maxQuantity}
-                    className="w-16 border-x border-slate-200 bg-white text-center text-base font-medium outline-none"
-                    aria-label="Quantity"
-                  />
-                  <button
-                    onClick={() => setQuantity((q) => Math.min(maxQuantity, q + 1))}
-                    disabled={quantity >= maxQuantity}
-                    className="h-12 w-12 grid place-items-center text-slate-500 hover:text-slate-950 hover:bg-slate-50 rounded-r-xl transition disabled:cursor-not-allowed disabled:opacity-50"
-                    aria-label="Increase quantity"
-                  >
-                    <Plus className="size-4" aria-hidden="true" />
-                  </button>
-                </div>
+                <QuantitySelector value={quantity} max={maxQuantity} onChange={setQuantity} />
                 <span className="text-sm text-slate-500">In stock: {product.stock}</span>
               </div>
             </div>

@@ -19,6 +19,8 @@ import intentRoutes from "./routes/intent.js";
 import cartRoutes from "./routes/cart.js";
 import traceRoutes from "./routes/trace.js";
 import chatRoutes from "./routes/chat.js";
+import productsRoutes from "./routes/products.js";
+import commerceRoutes from "./routes/commerce.js";
 // =========================================================
 // APP SETUP
 // =========================================================
@@ -80,8 +82,27 @@ app.use(
 // =========================================================
 
 app.use(
-    "/chat",
-    chatRoutes
+    "/pay",
+    payRoutes
+);
+
+// ---------------------------------------------------------
+// PRODUCTS ROUTES
+// ---------------------------------------------------------
+// GET /products
+// GET /products/:productId
+app.use(
+    "/products",
+    productsRoutes
+);
+
+// ---------------------------------------------------------
+// COMMERCE ROUTES
+// ---------------------------------------------------------
+// POST /commerce/checkout-preview
+app.use(
+    "/commerce",
+    commerceRoutes
 );
 
 // =========================================================
@@ -227,7 +248,16 @@ app.use(
     "/cart",
     cartRoutes
 );
-//
+
+// ---------------------------------------------------------
+// CHAT ROUTES
+// ---------------------------------------------------------
+// POST /chat
+app.use(
+    "/chat",
+    chatRoutes
+);
+
 app.use("/pay", payRoutes);
 //
 // app.use("/dashboard", dashboardRoutes);
