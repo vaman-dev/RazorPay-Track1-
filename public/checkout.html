@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mandate Ledger Checkout</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #09111f;
+      color: #e9eefc;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: radial-gradient(circle at top, #1c3967 0, #09111f 48rem);
+    }
+
+    main {
+      width: min(100%, 480px);
+      padding: 32px;
+      border: 1px solid #2a3b59;
+      border-radius: 18px;
+      background: rgba(14, 27, 49, .94);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, .3);
+    }
+
+    .eyebrow { margin: 0 0 8px; color: #8fb7ff; font-size: .78rem; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: 1.75rem; }
+    .intro { margin: 12px 0 28px; color: #b8c4da; line-height: 1.55; }
+
+    label { display: block; margin-bottom: 8px; font-size: .9rem; font-weight: 650; }
+    input {
+      width: 100%;
+      padding: 13px 14px;
+      border: 1px solid #425777;
+      border-radius: 10px;
+      background: #081221;
+      color: inherit;
+      font: inherit;
+    }
+    input:focus { outline: 2px solid #79a8ff; outline-offset: 2px; }
+
+    button {
+      width: 100%;
+      margin-top: 18px;
+      padding: 13px 16px;
+      border: 0;
+      border-radius: 10px;
+      background: #4f8cff;
+      color: #fff;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 750;
+    }
+    button:hover:not(:disabled) { background: #3d7df7; }
+    button:disabled { cursor: wait; opacity: .65; }
+
+    .status {
+      display: none;
+      margin-top: 20px;
+      padding: 12px 14px;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      line-height: 1.45;
+    }
+    .status.show { display: block; }
+    .status.info { border-color: #37578b; background: #102b54; color: #c7dcff; }
+    .status.success { border-color: #287158; background: #0d332b; color: #baf4df; }
+    .status.error { border-color: #933d4a; background: #401923; color: #ffced3; }
+
+    pre {
+      min-height: 0;
+      margin: 14px 0 0;
+      padding: 12px;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+      border-radius: 10px;
+      background: #081221;
+      color: #b8c4da;
+      font: .8rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    pre:empty { display: none; }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">Mandate Ledger</p>
+    <h1>Secure checkout</h1>
+    <p class="intro">Enter an approved cart ID. The server validates its mandate chain and creates the Razorpay order.</p>
+
+    <label for="cartId">Approved cart ID</label>
+    <input id="cartId" name="cartId" type="text" autocomplete="off" placeholder="cart_…" required>
+    <button id="payBtn" type="button">Pay with Razorpay</button>
+
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+    <pre id="meta" aria-live="polite"></pre>
+  </main>
+
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <script>
+    const payBtn = document.getElementById("payBtn");
+    const cartInput = document.getElementById("cartId");
+    const statusEl = document.getElementById("status");
+    const metaEl = document.getElementById("meta");
+
+    function setStatus(kind, message) {
+      statusEl.className = "status show " + kind;
+      statusEl.textContent = message;
+    }
+
+    function setMeta(text) {
+      metaEl.textContent = text;
+    }
+
+    payBtn.addEventListener("click", async () => {
+      const cartId = cartInput.value.trim();
+
+      if (!cartId) {
+        setStatus("error", "Enter a Cart ID first.");
+        cartInput.focus();
+        return;
+      }
+
+      if (typeof window.Razorpay !== "function") {
+        setStatus("error", "Razorpay Checkout could not be loaded. Check your internet connection and reload the page.");
+        return;
+      }
+
+      payBtn.disabled = true;
+      setStatus("info", "Validating mandate chain and creating Razorpay order...");
+      setMeta("");
+
+      try {
+        const res = await fetch("/pay", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cart_id: cartId })
+        });
+
+        const result = await res.json();
+
+        if (!res.ok || !result.success) {
+          setStatus("error", result.message || "Could not create payment order.");
+          payBtn.disabled = false;
+          return;
+        }
+
+        const paymentData = result.data;
+        if (!paymentData || !paymentData.checkout) {
+          throw new Error("Backend response does not contain checkout data.");
+        }
+
+        const { key_id, order_id, amount, currency } = paymentData.checkout;
+        const traceId = paymentData.trace_id;
+
+        if (!key_id || !order_id || !amount || !currency) {
+          throw new Error("Incomplete Razorpay checkout configuration received.");
+        }
+
+        setStatus("info", "Order created. Opening Razorpay Checkout...");
+        setMeta("trace_id: " + traceId + "\norder_id: " + order_id + "\namount: " + amount + "\ncurrency: " + currency);
+
+        let paymentSubmitted = false;
+        const rzp = new Razorpay({
+          key: key_id,
+          amount,
+          currency,
+          order_id,
+          name: "Mandate Ledger",
+          description: "Authorized purchase for " + cartId,
+          theme: { color: "#4f8cff" },
+          handler(response) {
+            paymentSubmitted = true;
+            setStatus("success", "Payment submitted successfully. Waiting for server-side webhook confirmation.");
+            setMeta("razorpay_payment_id: " + response.razorpay_payment_id + "\nrazorpay_order_id: " + response.razorpay_order_id + "\ntrace_id: " + traceId);
+            payBtn.disabled = false;
+          },
+          modal: {
+            ondismiss() {
+              if (!paymentSubmitted) {
+                setStatus("error", "Checkout was closed before payment completion.");
+              }
+              payBtn.disabled = false;
+            }
+          }
+        });
+
+        rzp.on("payment.failed", (response) => {
+          const error = response.error || {};
+          setStatus("error", "Payment failed: " + (error.description || "Unknown payment error."));
+          setMeta("reason: " + (error.reason || "unknown") + "\ncode: " + (error.code || "unknown") + "\nstep: " + (error.step || "unknown"));
+          payBtn.disabled = false;
+        });
+
+        rzp.open();
+      } catch (err) {
+        console.error(err);
+        setStatus("error", "Network or server error: " + err.message);
+        payBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
