@@ -619,6 +619,13 @@ function buildTraceSummary({
             0
         );
 
+    const committedAmount = approvedCarts.reduce(
+        (sum, cart) => sum + Number(cart.amount),
+        0,
+    );
+
+    const authorizedAmount = intent ? Number(intent.max_amount) : null;
+
 
     return {
 
@@ -627,10 +634,17 @@ function buildTraceSummary({
                 ? intent.status
                 : null,
 
-        authorized_amount:
-            intent
-                ? intent.max_amount
-                : null,
+        authorized_amount: authorizedAmount,
+
+        committed_amount: committedAmount,
+
+        remaining_amount: authorizedAmount === null ? null : Math.max(authorizedAmount - committedAmount, 0),
+
+        cart_count: carts.length,
+
+        payment_count: payments.length,
+
+        failed_payment_count: failedPayments.length,
 
         currency:
             intent
@@ -727,6 +741,8 @@ const rawIntent =
                 max_amount,
                 currency,
                 valid_until,
+                usage_mode,
+                policy_json,
                 mandate_hash,
                 signature,
 

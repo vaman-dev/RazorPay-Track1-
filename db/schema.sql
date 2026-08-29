@@ -89,6 +89,11 @@ CREATE TABLE IF NOT EXISTS intents (
 
     valid_until     DATETIME NOT NULL,
 
+    usage_mode      TEXT NOT NULL DEFAULT 'single_use'
+                    CHECK (usage_mode IN ('single_use', 'reusable_budget')),
+
+    policy_json     TEXT,
+
     mandate_hash    TEXT NOT NULL,
 
     signature       TEXT NOT NULL,
@@ -281,6 +286,9 @@ ON carts(trace_id);
 
 CREATE INDEX IF NOT EXISTS idx_carts_intent
 ON carts(intent_id);
+
+CREATE INDEX IF NOT EXISTS idx_carts_intent_status
+ON carts(intent_id, status);
 
 CREATE INDEX IF NOT EXISTS idx_payments_trace
 ON payments(trace_id);

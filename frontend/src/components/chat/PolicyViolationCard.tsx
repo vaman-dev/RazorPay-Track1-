@@ -19,10 +19,18 @@ function PolicyViolationCard({
   onModifyPurchase,
   onRequestNewAuthorization,
 }: PolicyViolationCardProps) {
-  if (violation.code !== "CAP_EXCEEDED") return null;
-
   const details = violation.details;
   const currency = details?.currency || "INR";
+
+  if (violation.code === "SCOPE_NOT_ALLOWED") {
+    return <section className="mt-3 w-full max-w-md overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm" aria-label="Authorization scope policy block">
+      <div className="flex items-start gap-3 border-b border-amber-100 bg-amber-50 px-4 py-4 text-amber-950"><div className="grid size-9 shrink-0 place-items-center rounded-xl bg-amber-200 text-amber-900"><CircleAlert className="size-5" /></div><div><p className="text-sm font-semibold">Purchase outside authorization</p><p className="mt-0.5 text-xs text-amber-800">Policy block — payment was not initiated</p></div></div>
+      <div className="space-y-3 px-4 py-4"><DetailRow label="Authorized scope" value={details?.scope || "—"} /><DetailRow label="Requested product" value={details?.product_name || "—"} /><DetailRow label="Requested category" value={details?.requested_category || "—"} /><p className="rounded-xl bg-slate-50 px-3 py-2.5 text-sm leading-5 text-slate-600">The amount may be available, but this trusted product is outside the approved purchase scope.</p></div>
+      <div className="border-t border-slate-100 bg-slate-50 p-3"><button type="button" disabled={disabled} onClick={onRequestNewAuthorization} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"><PlusCircle className="size-4" />Create new authorization</button></div>
+    </section>;
+  }
+
+  if (violation.code !== "CAP_EXCEEDED") return null;
 
   return (
     <section className="mt-3 w-full max-w-md overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm" aria-label="Authorization policy block">
@@ -38,8 +46,10 @@ function PolicyViolationCard({
 
       <div className="space-y-3 px-4 py-4">
         <DetailRow label="Authorized amount" value={formatMoney(details?.authorized_amount, currency)} />
+        {typeof details?.committed_amount === "number" && <DetailRow label="Already committed" value={formatMoney(details.committed_amount, currency)} />}
+        {typeof details?.remaining_amount === "number" && <DetailRow label="Available" value={formatMoney(details.remaining_amount, currency)} />}
         <DetailRow label="Attempted purchase" value={formatMoney(details?.requested_amount, currency)} />
-        <DetailRow label="Over authorization" value={formatMoney(details?.excess_amount, currency)} emphasized />
+        <DetailRow label={typeof details?.remaining_amount === "number" ? "Over remaining limit" : "Over authorization"} value={formatMoney(details?.excess_amount, currency)} emphasized />
         <p className="rounded-xl bg-slate-50 px-3 py-2.5 text-sm leading-5 text-slate-600">
           This purchase was blocked before payment initialization because it exceeds the user&apos;s approved spending mandate.
         </p>

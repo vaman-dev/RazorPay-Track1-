@@ -337,6 +337,12 @@ MANDATORY RULES:
    currency unit. For INR this means paise:
    ₹1 = 100 paise.
 
+16. Intent usage mode is a user authorization choice:
+   - use single_use for one committed purchase (the default),
+   - use reusable_budget only when the user explicitly asks to authorize
+     multiple purchases under one cumulative budget.
+   Never silently convert an existing single-use Intent into reusable_budget.
+
 CART POLICY AUTHORITY RULE:
 
 - When the user explicitly asks to add items to a cart, create a cart,
@@ -482,6 +488,21 @@ const tools = [
 
                             description:
                                 "ISO 8601 timestamp representing when this authorization expires.",
+
+                        },
+
+                        usage_mode: {
+
+                            type:
+                                Type.STRING,
+
+                            enum: [
+                                "single_use",
+                                "reusable_budget",
+                            ],
+
+                            description:
+                                "single_use for one committed purchase; reusable_budget only when the user explicitly authorizes multiple purchases under the same cumulative limit.",
 
                         },
 

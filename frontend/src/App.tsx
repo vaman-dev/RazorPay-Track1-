@@ -6,6 +6,7 @@ import ShopPage from "./pages/ShopPage";
 import ProductPage from "./pages/ProductPage";
 import CartPage from "./pages/CartPage";
 import CheckoutPage from "./pages/CheckoutPage";
+import OrderConfirmationPage from "./pages/OrderConfirmationPage";
 import ChatPage from "./pages/ChatPage";
 import DashboardPage from "./pages/DashboardPage";
 
@@ -20,6 +21,7 @@ function App() {
             <Route path="/product/:productId" element={<ProductPage />} />
             <Route path="/cart" element={<CartPage />} />
             <Route path="/checkout" element={<CheckoutPage />} />
+            <Route path="/order/:checkoutId/:traceId" element={<OrderConfirmationPage />} />
             <Route path="/assistant" element={<ChatPage />} />
             <Route path="/dashboard/:traceId" element={<DashboardPage />} />
           </Route>

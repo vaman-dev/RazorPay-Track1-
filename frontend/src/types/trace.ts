@@ -7,6 +7,8 @@ export interface TraceIntent {
   max_amount: MoneyAmount;
   currency: string;
   valid_until: string | null;
+  usage_mode?: "single_use" | "reusable_budget";
+  policy_json?: string | null;
   mandate_hash: string;
   status: string;
   created_at: string;
@@ -101,6 +103,11 @@ export interface TraceIntegrity {
 export interface TraceSummary {
   intent_status: string | null;
   authorized_amount: MoneyAmount | null;
+  committed_amount?: MoneyAmount;
+  remaining_amount?: MoneyAmount | null;
+  cart_count?: number;
+  payment_count?: number;
+  failed_payment_count?: number;
   currency: string | null;
   carts: { total: number; approved: number; rejected: number };
   payments: { total: number; captured: number; failed: number; captured_amount: number };

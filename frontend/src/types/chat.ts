@@ -2,16 +2,24 @@ export type ChatResponseType = "message" | "confirmation_required" | "action";
 
 export type PolicyViolationCode =
   | "CAP_EXCEEDED"
+  | "SCOPE_NOT_ALLOWED"
   | "INTENT_EXPIRED"
   | "PAYMENT_FAILED"
   | "INTEGRITY_FAILURE";
 
 export interface PolicyViolationDetails {
   authorized_amount?: number;
+  committed_amount?: number;
+  remaining_amount?: number;
   requested_amount?: number;
   excess_amount?: number;
   currency?: string;
   trace_id?: string;
+  scope?: string;
+  allowed_categories?: string[];
+  requested_category?: string;
+  product_id?: string;
+  product_name?: string;
 }
 
 export interface PolicyViolation {

@@ -4,8 +4,8 @@ function formatMoney(amount: number, currency: string) { return new Intl.NumberF
 
 function SpendSummary({ trace }: { trace: TraceData }) {
   const authorized = Number(trace.summary.authorized_amount || 0);
-  const committed = Number(trace.carts.at(-1)?.amount || 0);
-  const remaining = Math.max(authorized - committed, 0);
+  const committed = Number(trace.summary.committed_amount ?? trace.carts.filter((cart) => cart.status === "approved").reduce((sum, cart) => sum + Number(cart.amount), 0));
+  const remaining = Number(trace.summary.remaining_amount ?? Math.max(authorized - committed, 0));
   const percentage = authorized ? Math.min((committed / authorized) * 100, 100) : 0;
   const currency = trace.summary.currency || "INR";
   return <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm"><p className="text-xs font-bold tracking-[0.16em] text-slate-500">AUTHORIZATION</p><h2 className="mt-1 text-xl font-semibold tracking-tight">Spend-cap usage</h2>

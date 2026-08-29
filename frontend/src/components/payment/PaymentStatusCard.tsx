@@ -64,7 +64,7 @@ function PaymentStatusCard({ status, detail, amount, currency, traceId, onRetry 
         {content.title}
       </div>
       <p className="mt-1 text-sm opacity-80">{content.description}</p>
-      {status === "failed" && amountText && <p className="mt-3 text-sm font-semibold">{amountText} was not captured.</p>}
+      {status === "failed" && amountText && <><p className="mt-3 text-sm font-semibold">{amountText} was not captured.</p><p className="mt-2 text-sm opacity-80">This Cart still reserves {amountText} of your authorization so the same purchase can be retried safely. It is not reserved again on retry.</p></>}
       {status === "failed" && <p className="mt-2 text-xs font-semibold uppercase tracking-wide opacity-70">Status: Failed</p>}
       {(status === "failed" || status === "captured") && (onRetry || traceId) && (
         <div className="mt-4 flex flex-wrap gap-2">

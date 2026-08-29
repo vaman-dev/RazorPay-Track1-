@@ -1,7 +1,14 @@
-import type { Product } from "../types/commerce";
+import type { Product, TrustedCheckout } from "../types/commerce";
+import type { PolicyViolation, RazorpayCheckoutAction } from "../types/chat";
 
 const API_BASE = "/products";
 const COMMERCE_API_BASE = "/commerce";
+
+export class CommerceApiError extends Error {
+  status?: number;
+  code?: string;
+  policyViolation?: PolicyViolation;
+}
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -10,9 +17,11 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   });
   const data = await response.json();
   if (!response.ok) {
-    const error = new Error(data.message || "Request failed");
+    const error = new CommerceApiError(data.message || "Request failed");
     error.name = data.error || "API_ERROR";
-    (error as any).status = response.status;
+    error.code = data.error;
+    error.status = response.status;
+    error.policyViolation = data.policy_violation;
     throw error;
   }
   return data.data as T;
@@ -43,23 +52,45 @@ export interface CheckoutPreviewRequest {
   items: Array<{ product_id: string; quantity: number }>;
 }
 
-export interface CheckoutPreviewResponse {
-  items: Array<{
-    product_id: string;
-    name: string;
-    merchant: string;
-    quantity: number;
-    unit_amount: number;
-    line_amount: number;
-  }>;
-  amount: number;
-  currency: "INR";
-  itemCount: number;
-}
+export type CheckoutPreviewResponse = TrustedCheckout;
 
 export async function getCheckoutPreview(request: CheckoutPreviewRequest): Promise<CheckoutPreviewResponse> {
   return fetchJson<CheckoutPreviewResponse>(`${COMMERCE_API_BASE}/checkout-preview`, {
     method: "POST",
     body: JSON.stringify(request),
   });
+}
+
+export async function getCheckout(checkoutId: string): Promise<TrustedCheckout> {
+  return fetchJson<TrustedCheckout>(`${COMMERCE_API_BASE}/checkout/${encodeURIComponent(checkoutId)}`);
+}
+
+export interface CommerceIntent {
+  id: string;
+  trace_id: string;
+  scope: string;
+  max_amount: number;
+  currency: string;
+  valid_until: string;
+  status: string;
+}
+
+export async function createCheckoutIntent(checkoutId: string, validUntil: string, maxAmount: number): Promise<CommerceIntent> {
+  const data = await fetchJson<{ intent: CommerceIntent }>(`${COMMERCE_API_BASE}/checkout/${encodeURIComponent(checkoutId)}/intent`, {
+    method: "POST",
+    body: JSON.stringify({ valid_until: validUntil, max_amount: maxAmount }),
+  });
+  return data.intent;
+}
+
+export async function approveCheckoutIntent(checkoutId: string): Promise<{ intent: CommerceIntent }> {
+  return fetchJson(`${COMMERCE_API_BASE}/checkout/${encodeURIComponent(checkoutId)}/approve-intent`, { method: "POST" });
+}
+
+export async function commitCheckoutCart(checkoutId: string): Promise<{ intent: CommerceIntent; cart: { id: string; trace_id: string; amount: number; currency: string; status: string } }> {
+  return fetchJson(`${COMMERCE_API_BASE}/checkout/${encodeURIComponent(checkoutId)}/cart`, { method: "POST" });
+}
+
+export async function initializeCheckoutPayment(checkoutId: string): Promise<{ payment: { id: string; trace_id: string; cart_id: string; amount: number; currency: string }; action: RazorpayCheckoutAction }> {
+  return fetchJson(`${COMMERCE_API_BASE}/checkout/${encodeURIComponent(checkoutId)}/payment`, { method: "POST" });
 }

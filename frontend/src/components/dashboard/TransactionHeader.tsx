@@ -14,7 +14,10 @@ function TransactionHeader({ trace, onCopyTraceId }: TransactionHeaderProps) {
   const capturedAmount = trace.summary.payments.captured_amount;
   const latestPayment = trace.payments.at(-1);
   const status = latestPayment?.status || "pending";
-  const title = status === "captured" && trace.integrity.chain_valid
+  const reusable = trace.intent?.usage_mode === "reusable_budget";
+  const title = reusable
+    ? "Reusable authorization"
+    : status === "captured" && trace.integrity.chain_valid
     ? "Verified transaction"
     : status === "failed"
       ? "Failed payment trace"
@@ -41,9 +44,10 @@ function TransactionHeader({ trace, onCopyTraceId }: TransactionHeaderProps) {
           </div>
         </div>
         <div className="rounded-2xl bg-slate-950 px-5 py-4 text-white sm:min-w-48">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Payment status</p>
-          <p className="mt-1 text-lg font-semibold capitalize">{status}</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">{reusable ? "Authorization status" : "Payment status"}</p>
+          <p className="mt-1 text-lg font-semibold capitalize">{reusable ? trace.intent?.status || "pending" : status}</p>
           {capturedAmount > 0 && <p className="mt-1 text-sm text-slate-300">{formatMoney(capturedAmount, trace.summary.currency || "INR")} captured</p>}
+          {reusable && <p className="mt-1 text-sm text-slate-300">{trace.summary.carts.approved} Carts · {trace.summary.payments.captured} captured · {trace.summary.payments.failed} failed</p>}
         </div>
       </div>
     </section>

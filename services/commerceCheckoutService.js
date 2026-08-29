@@ -63,6 +63,7 @@ export function computeCheckoutPreview(items) {
       product_id: product.id,
       name: product.name,
       merchant: product.merchant,
+      category: product.category,
       quantity,
       unit_amount: unitAmount,
       line_amount: lineAmount,
@@ -73,6 +74,7 @@ export function computeCheckoutPreview(items) {
   }
 
   return {
+    merchant,
     items: validatedItems,
     amount: totalAmount,
     currency: "INR",

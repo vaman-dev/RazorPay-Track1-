@@ -21,7 +21,7 @@ function MandateChain({ trace }: { trace: TraceData }) {
   const cart = trace.carts.at(-1);
   const payment = trace.payments.at(-1);
   return <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
-    <div><p className="text-xs font-bold tracking-[0.16em] text-slate-500">AUTHORIZATION CHAIN</p><h2 className="mt-1 text-xl font-semibold tracking-tight">Intent → Cart → Payment</h2></div>
+    <div><p className="text-xs font-bold tracking-[0.16em] text-slate-500">AUTHORIZATION CHAIN</p><h2 className="mt-1 text-xl font-semibold tracking-tight">Intent → {trace.carts.length} Cart mandate{trace.carts.length === 1 ? "" : "s"} → Payment</h2></div>
     <div className="mt-6 flex flex-col items-stretch gap-3 sm:flex-row sm:items-center">
       <ChainNode label="INTENT" entity={trace.intent} amount={trace.intent?.max_amount} currency={trace.intent?.currency} />
       <Link valid={trace.integrity.intent_cart_links_valid} label="hash link valid" />

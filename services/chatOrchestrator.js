@@ -96,6 +96,8 @@ const session = {
         // source of truth for those identifiers.
         state: {
             intent_id: null,
+            active_intent_id: null,
+            intent_ids: [],
             trace_id: null,
             cart_id: null,
             payment_id: null,
@@ -419,6 +421,12 @@ async function executeTool(
                 valid_until:
                     args.valid_until,
 
+                usage_mode:
+                    args.usage_mode || "single_use",
+
+                policy:
+                    args.policy || null,
+
             });
 
         }
@@ -655,10 +663,10 @@ function buildPolicyViolation(
         toolResult?.error;
 
 
-    if (
-        error?.code !==
-        "CAP_EXCEEDED"
-    ) {
+    if (![
+        "CAP_EXCEEDED",
+        "SCOPE_NOT_ALLOWED",
+    ].includes(error?.code)) {
 
         return null;
 
@@ -678,6 +686,12 @@ function buildPolicyViolation(
             authorized_amount:
                 error.details?.authorized_amount,
 
+            committed_amount:
+                error.details?.committed_amount,
+
+            remaining_amount:
+                error.details?.remaining_amount,
+
             requested_amount:
                 error.details?.requested_amount,
 
@@ -686,6 +700,21 @@ function buildPolicyViolation(
 
             currency:
                 error.details?.currency,
+
+            scope:
+                error.details?.scope,
+
+            allowed_categories:
+                error.details?.allowed_categories,
+
+            requested_category:
+                error.details?.requested_category,
+
+            product_id:
+                error.details?.product_id,
+
+            product_name:
+                error.details?.product_name,
 
         },
 
@@ -727,6 +756,12 @@ function updateSessionState(
 
         session.state.intent_id =
             data.id;
+
+        session.state.active_intent_id = data.id;
+
+        if (!session.state.intent_ids.includes(data.id)) {
+            session.state.intent_ids.push(data.id);
+        }
 
         session.state.trace_id =
             data.trace_id;
@@ -832,7 +867,7 @@ function buildFastToolResponse(
                 capValidation.max_amount,
                 data.currency
             )} authorization, leaving ${formatMoney(
-                capValidation.remaining_amount,
+                capValidation.remaining_after ?? capValidation.remaining_amount,
                 data.currency
             )} available.`;
 
@@ -2136,6 +2171,7 @@ const confirmation =
                             toolResult.data.status,
 
                         remaining_amount:
+                            toolResult.data.cap_validation.remaining_after ??
                             toolResult.data.cap_validation.remaining_amount,
 
                     }
@@ -2420,6 +2456,7 @@ updateSessionState(
                             toolResult.data.status,
 
                         remaining_amount:
+                            toolResult.data.cap_validation.remaining_after ??
                             toolResult.data.cap_validation.remaining_amount,
 
                     }

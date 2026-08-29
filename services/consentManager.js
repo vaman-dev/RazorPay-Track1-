@@ -34,6 +34,9 @@ function validateIntentInput({
     max_amount,
     valid_until,
     currency = "INR",
+    usage_mode = "single_use",
+    policy = null,
+    policy_json = null,
 }) {
 
     // -----------------------------------------------------
@@ -168,6 +171,56 @@ function validateIntentInput({
     }
 
 
+    if (
+        usage_mode !== "single_use" &&
+        usage_mode !== "reusable_budget"
+    ) {
+        const error = new Error("usage_mode must be single_use or reusable_budget");
+        error.status = 400;
+        error.code = "INVALID_USAGE_MODE";
+        throw error;
+    }
+
+    let rawPolicy = policy ?? policy_json;
+    if (typeof rawPolicy === "string") {
+        try {
+            rawPolicy = JSON.parse(rawPolicy);
+        } catch {
+            const error = new Error("policy_json must be valid JSON");
+            error.status = 400;
+            error.code = "INVALID_POLICY";
+            throw error;
+        }
+    }
+
+    if (rawPolicy !== null && (typeof rawPolicy !== "object" || Array.isArray(rawPolicy))) {
+        const error = new Error("policy must be an object");
+        error.status = 400;
+        error.code = "INVALID_POLICY";
+        throw error;
+    }
+
+    const normalizeList = (value, field) => {
+        if (value === undefined) return [];
+        if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || !entry.trim())) {
+            const error = new Error(`${field} must be an array of non-empty strings`);
+            error.status = 400;
+            error.code = "INVALID_POLICY";
+            throw error;
+        }
+        return [...new Set(value.map((entry) => entry.trim()))].sort();
+    };
+
+    const normalizedPolicy = rawPolicy ? {
+        categories: normalizeList(rawPolicy.categories, "policy.categories"),
+        merchant_ids: normalizeList(rawPolicy.merchant_ids, "policy.merchant_ids"),
+        product_ids: normalizeList(rawPolicy.product_ids, "policy.product_ids"),
+    } : {};
+
+    const policyJson = Object.values(normalizedPolicy).some((value) => value.length > 0)
+        ? JSON.stringify(normalizedPolicy)
+        : null;
+
     return {
 
         scope:
@@ -185,6 +238,10 @@ function validateIntentInput({
             validUntilDate
                 .toISOString(),
 
+        usageMode: usage_mode,
+
+        policyJson,
+
     };
 
 }
@@ -199,10 +256,11 @@ function generateIntentHash({
     maxAmount,
     currency,
     validUntil,
+    usageMode = "single_use",
+    policyJson = null,
 }) {
 
-    const canonicalPayload =
-        JSON.stringify({
+    const canonicalFields = {
 
             scope,
 
@@ -214,7 +272,16 @@ function generateIntentHash({
             valid_until:
                 validUntil,
 
-        });
+    };
+
+    // Preserve verification for pre-v1.1 single-use mandates, whose hashes
+    // intentionally did not contain policy fields.
+    if (usageMode !== "single_use" || policyJson) {
+        canonicalFields.usage_mode = usageMode;
+        canonicalFields.policy_json = policyJson;
+    }
+
+    const canonicalPayload = JSON.stringify(canonicalFields);
 
 
     return crypto
@@ -290,6 +357,12 @@ export function verifyIntentIntegrity(intent) {
 
             validUntil:
                 intent.valid_until,
+
+            usageMode:
+                intent.usage_mode || "single_use",
+
+            policyJson:
+                intent.policy_json || null,
 
         });
 
@@ -440,6 +513,12 @@ export function createIntent(input) {
             validUntil:
                 validated.validUntil,
 
+            usageMode:
+                validated.usageMode,
+
+            policyJson:
+                validated.policyJson,
+
         });
 
 
@@ -472,11 +551,13 @@ export function createIntent(input) {
                 max_amount,
                 currency,
                 valid_until,
+                usage_mode,
+                policy_json,
                 mandate_hash,
                 signature,
                 status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
 
@@ -500,6 +581,10 @@ export function createIntent(input) {
                 validated.currency,
 
                 validated.validUntil,
+
+                validated.usageMode,
+
+                validated.policyJson,
 
                 mandateHash,
 
@@ -546,6 +631,12 @@ export function createIntent(input) {
                     valid_until:
                         validated.validUntil,
 
+                    usage_mode:
+                        validated.usageMode,
+
+                    policy_json:
+                        validated.policyJson,
+
                 },
 
             });
@@ -574,6 +665,12 @@ export function createIntent(input) {
 
         valid_until:
             validated.validUntil,
+
+        usage_mode:
+            validated.usageMode,
+
+        policy_json:
+            validated.policyJson,
 
         status:
             "pending",
@@ -1615,7 +1712,10 @@ export function createCart(input) {
             );
 
 
-    if (committedCart) {
+    if (
+        (intent.usage_mode || "single_use") === "single_use" &&
+        committedCart
+    ) {
 
         const error =
             new Error(
@@ -1639,6 +1739,12 @@ export function createCart(input) {
 
             cart_status:
                 committedCart.status,
+
+            usage_mode:
+                "single_use",
+
+            guidance:
+                "Create and explicitly approve a new reusable_budget Intent to authorize multiple purchases under one cumulative limit.",
 
         };
 
@@ -1829,7 +1935,7 @@ export function createCart(input) {
                             "CAP_EXCEEDED",
 
                         detail:
-                            `Cart rejected because requested amount ${validated.amount} exceeded authorized amount ${intent.max_amount}.`,
+                            `Cart rejected because requested amount ${validated.amount} exceeded remaining authorization ${error.details?.remaining_amount ?? intent.max_amount}.`,
 
                         metadata: {
 
@@ -1837,14 +1943,19 @@ export function createCart(input) {
                                 intent.id,
 
                             authorized_amount:
-                                intent.max_amount,
+                                error.details?.authorized_amount ?? intent.max_amount,
+
+                            committed_amount:
+                                error.details?.committed_amount ?? 0,
+
+                            remaining_amount:
+                                error.details?.remaining_amount ?? intent.max_amount,
 
                             requested_amount:
                                 validated.amount,
 
                             excess_amount:
-                                validated.amount -
-                                intent.max_amount,
+                                error.details?.excess_amount ?? (validated.amount - intent.max_amount),
 
                             currency:
                                 validated.currency,
@@ -1891,6 +2002,31 @@ export function createCart(input) {
 
     const transaction =
         db.transaction(() => {
+
+            // Re-read and re-check inside the same SQLite transaction as the
+            // insert. This is the authoritative reusable-budget reservation.
+            const currentIntent = getIntentById(validated.intentId);
+            verifyIntentIntegrity(currentIntent);
+
+            if ((currentIntent.usage_mode || "single_use") === "single_use") {
+                const alreadyCommitted = db.prepare(`
+                    SELECT id, trace_id, status FROM carts
+                    WHERE intent_id = ? AND status = 'approved' LIMIT 1
+                `).get(currentIntent.id);
+                if (alreadyCommitted) {
+                    const error = new Error("Intent has already been used for an approved Cart");
+                    error.status = 409;
+                    error.code = "INTENT_ALREADY_COMMITTED";
+                    error.details = { intent_id: currentIntent.id, cart_id: alreadyCommitted.id, trace_id: alreadyCommitted.trace_id, cart_status: alreadyCommitted.status };
+                    throw error;
+                }
+            }
+
+            capResult = validateCartAgainstIntent({
+                intent: currentIntent,
+                amount: validated.amount,
+                currency: validated.currency,
+            });
 
             db
                 .prepare(`
@@ -1969,8 +2105,8 @@ export function createCart(input) {
 
                 metadata: {
 
-                    intent_id:
-                        intent.id,
+                            intent_id:
+                                intent.id,
 
                     merchant:
                         validated.merchant,
@@ -2017,14 +2153,20 @@ export function createCart(input) {
 
                 metadata: {
 
-                    authorized_amount:
-                        intent.max_amount,
+                            authorized_amount:
+                                capResult.max_amount,
+
+                            committed_before:
+                                capResult.committed_amount,
+
+                            committed_after:
+                                capResult.committed_after,
 
                     requested_amount:
                         validated.amount,
 
-                    remaining_amount:
-                        capResult.remaining_amount,
+                            remaining_amount:
+                                capResult.remaining_after,
 
                     currency:
                         validated.currency,

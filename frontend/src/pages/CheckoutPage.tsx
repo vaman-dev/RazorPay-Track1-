@@ -1,183 +1,190 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowLeft, LoaderCircle, AlertCircle, CheckCircle } from "lucide-react";
-import { useCart } from "../context/CartContext";
-import { getCheckoutPreview, type CheckoutPreviewResponse } from "../services/commerceApi";
+import { AlertCircle, ArrowLeft, CheckCircle, LoaderCircle } from "lucide-react";
 import CheckoutSummary from "../components/commerce/CheckoutSummary";
+import ConfirmationCard from "../components/chat/ConfirmationCard";
+import PolicyViolationCard from "../components/chat/PolicyViolationCard";
+import PaymentStatusCard from "../components/payment/PaymentStatusCard";
+import { useCart } from "../context/CartContext";
+import { approveCheckoutIntent, commitCheckoutCart, CommerceApiError, createCheckoutIntent, getCheckoutPreview, initializeCheckoutPayment, type CheckoutPreviewResponse, type CommerceIntent } from "../services/commerceApi";
+import { openRazorpayCheckout } from "../services/razorpay";
+import { getTrace } from "../services/traceApi";
+import type { PolicyViolation, RazorpayCheckoutAction } from "../types/chat";
+import type { CheckoutStage } from "../types/commerce";
+
+function defaultValidity() {
+  const value = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  value.setMinutes(value.getMinutes() - value.getTimezoneOffset());
+  return value.toISOString().slice(0, 16);
+}
+
+function formatPrice(amount: number, currency = "INR") {
+  return new Intl.NumberFormat("en-IN", { style: "currency", currency, maximumFractionDigits: 0 }).format(amount / 100);
+}
 
 export default function CheckoutPage() {
-  const { state: cart } = useCart();
+  const { state: cart, clearCart } = useCart();
   const navigate = useNavigate();
-
   const [preview, setPreview] = useState<CheckoutPreviewResponse | null>(null);
+  const [intent, setIntent] = useState<CommerceIntent | null>(null);
+  const [stage, setStage] = useState<CheckoutStage>("review");
+  const [validUntil, setValidUntil] = useState(defaultValidity);
+  const [maximumSpend, setMaximumSpend] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [policyViolation, setPolicyViolation] = useState<PolicyViolation | null>(null);
+  const [paymentAction, setPaymentAction] = useState<RazorpayCheckoutAction | null>(null);
+  const [paymentStatus, setPaymentStatus] = useState<"opening" | "submitted" | "verifying" | "captured" | "dismissed" | "failed" | null>(null);
+  const [paymentDetail, setPaymentDetail] = useState<string>();
+  const [checkoutExpired, setCheckoutExpired] = useState(false);
+
+  function handleCheckoutError(requestError: unknown, fallback: string) {
+    const apiError = requestError as CommerceApiError;
+    if (apiError.code === "CHECKOUT_SESSION_NOT_FOUND" || apiError.code === "CHECKOUT_SESSION_EXPIRED") {
+      setCheckoutExpired(true); setPreview(null); setError(null); return;
+    }
+    setError(requestError instanceof Error ? requestError.message : fallback);
+  }
+
+  async function refreshCheckout() {
+    if (!cart.itemCount) return;
+    setIsLoading(true); setError(null); setCheckoutExpired(false);
+    try {
+      const trustedCheckout = await getCheckoutPreview({ items: cart.items.map((item) => ({ product_id: item.product.id, quantity: item.quantity })) });
+      setPreview(trustedCheckout); setIntent(null); setStage("review"); setMaximumSpend(String(trustedCheckout.amount / 100));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Failed to refresh checkout.");
+    } finally { setIsLoading(false); }
+  }
 
   useEffect(() => {
-    let isMounted = true;
-
-    async function loadPreview() {
-      if (cart.itemCount === 0) {
-        navigate("/cart");
-        return;
-      }
-
+    let mounted = true;
+    if (!cart.itemCount) {
+      navigate("/cart", { replace: true });
+      return undefined;
+    }
+    void (async () => {
       try {
         setIsLoading(true);
-        const items = cart.items.map((item: { product: { id: string }; quantity: number }) => ({
-          product_id: item.product.id,
-          quantity: item.quantity,
-        }));
-        const data = await getCheckoutPreview({ items });
-        if (isMounted) {
-          setPreview(data);
-          setError(null);
-        }
-      } catch (err) {
-        if (isMounted) {
-          const message = err instanceof Error ? err.message : "Failed to load checkout preview";
-          setError(message);
-        }
+        const trustedCheckout = await getCheckoutPreview({ items: cart.items.map((item) => ({ product_id: item.product.id, quantity: item.quantity })) });
+        if (mounted) { setPreview(trustedCheckout); setMaximumSpend(String(trustedCheckout.amount / 100)); setError(null); setCheckoutExpired(false); }
+      } catch (requestError) {
+        if (mounted) setError(requestError instanceof Error ? requestError.message : "Failed to load checkout preview.");
       } finally {
-        if (isMounted) setIsLoading(false);
+        if (mounted) setIsLoading(false);
       }
+    })();
+    return () => { mounted = false; };
+  }, [cart.itemCount, cart.items, navigate]);
+
+  const intentConfirmation = useMemo(() => !preview || !intent ? null : ({
+    action: "approve_intent",
+    title: "Approve authorization?",
+    details: { scope: intent.scope, merchant: preview.merchant, max_amount: intent.max_amount, currency: intent.currency, valid_until: intent.valid_until },
+  }), [intent, preview]);
+
+  const paymentConfirmation = useMemo(() => !preview ? null : ({
+    action: "initiate_payment",
+    title: "Confirm payment",
+    details: { merchant: preview.merchant, amount: preview.amount, currency: preview.currency },
+  }), [preview]);
+
+  async function startAuthorization() {
+    if (!preview) return;
+    const maxAmount = Math.round(Number(maximumSpend) * 100);
+    if (!validUntil || Number.isNaN(new Date(validUntil).getTime())) {
+      setError("Select a future authorization expiry before continuing.");
+      return;
     }
-
-    loadPreview();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [cart.items, cart.itemCount, navigate]);
-
-  function formatPrice(price: number): string {
-    return new Intl.NumberFormat("en-IN", {
-      style: "currency",
-      currency: "INR",
-      maximumFractionDigits: 0,
-    }).format(price / 100);
+    if (!Number.isInteger(maxAmount) || maxAmount <= 0) {
+      setError("Enter a valid maximum authorization amount.");
+      return;
+    }
+    setIsBusy(true); setError(null); setPolicyViolation(null);
+    try {
+      const created = await createCheckoutIntent(preview.checkout_id, new Date(validUntil).toISOString(), maxAmount);
+      setIntent(created); setStage("authorization_pending");
+    } catch (requestError) {
+      handleCheckoutError(requestError, "Unable to create authorization.");
+    } finally { setIsBusy(false); }
   }
 
-  const handleAuthorize = () => {
-    navigate("/assistant");
-  };
-
-  if (cart.itemCount === 0) {
-    return (
-      <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
-        <div className="mx-auto max-w-md text-center">
-          <Link to="/shop" className="mb-8 inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-950">
-            <ArrowLeft className="size-4" aria-hidden="true" />
-            Continue Shopping
-          </Link>
-          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-slate-100">
-            <svg className="size-10 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 11V7a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2h8a2 2 0 002-2v-4" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11 11l5-5-5-5" />
-            </svg>
-          </div>
-          <h1 className="text-2xl font-semibold text-slate-950">Your cart is empty</h1>
-          <p className="mt-2 text-slate-500">Add products to your cart before checkout.</p>
-          <Link to="/shop" className="mt-6 inline-flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-6 py-3 text-base font-semibold text-white transition hover:bg-slate-800">
-            Shop Products
-          </Link>
-        </div>
-      </div>
-    );
+  async function approveAuthorization() {
+    if (!preview) return;
+    setIsBusy(true); setError(null);
+    try {
+      await approveCheckoutIntent(preview.checkout_id);
+      await commitCheckoutCart(preview.checkout_id);
+      setStage("payment_confirmation");
+    } catch (requestError) {
+      const apiError = requestError as CommerceApiError;
+      setPolicyViolation(apiError.policyViolation ?? null);
+      if (!apiError.policyViolation) handleCheckoutError(requestError, "Unable to approve the authorization or commit the Cart.");
+    } finally { setIsBusy(false); }
   }
 
-  if (isLoading) {
-    return (
-      <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
-        <div className="grid min-h-96 place-items-center">
-          <div className="flex flex-col items-center gap-4 text-center">
-            <LoaderCircle className="size-8 animate-spin text-slate-400" />
-            <p className="text-slate-500">Loading checkout preview…</p>
-          </div>
-        </div>
-      </div>
-    );
+  async function confirmPayment() {
+    if (!preview) return;
+    setIsBusy(true); setError(null);
+    try {
+      const result = await initializeCheckoutPayment(preview.checkout_id);
+      setPaymentAction(result.action); setStage("payment_processing"); openPaymentCheckout(result.action);
+    } catch (requestError) {
+      handleCheckoutError(requestError, "Unable to initialize payment."); setStage("payment_confirmation");
+    } finally { setIsBusy(false); }
   }
 
-  if (error || !preview) {
-    return (
-      <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
-        <div className="mx-auto max-w-md text-center">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-red-100">
-            <AlertCircle className="size-8 text-red-600" aria-hidden="true" />
-          </div>
-          <h1 className="text-2xl font-semibold text-slate-950">Unable to load checkout</h1>
-          <p className="mt-2 text-slate-500">{error || "An unexpected error occurred."}</p>
-          <Link to="/cart" className="mt-6 inline-flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-6 py-3 text-base font-semibold text-white transition hover:bg-slate-800">
-            Back to Cart
-          </Link>
-        </div>
-      </div>
-    );
+  function openPaymentCheckout(action: RazorpayCheckoutAction) {
+    setPaymentStatus("opening");
+    try {
+      openRazorpayCheckout(action, {
+        onSubmitted: () => { setPaymentStatus("submitted"); setStage("payment_verifying"); void verifyPayment(action); },
+        onDismissed: () => { setPaymentStatus("dismissed"); setStage("payment_confirmation"); },
+        onFailed: () => { setPaymentStatus("verifying"); setPaymentDetail("Payment attempt failed. Verifying the server record…"); setStage("payment_verifying"); void verifyPayment(action, true); },
+      });
+    } catch (checkoutError) {
+      setPaymentStatus("failed"); setPaymentDetail(checkoutError instanceof Error ? checkoutError.message : "Unable to open Razorpay Checkout."); setStage("failed");
+    }
   }
 
-  return (
-    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-      <Link to="/cart" className="mb-6 inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-950">
-        <ArrowLeft className="size-4" aria-hidden="true" />
-        Back to Cart
-      </Link>
+  async function verifyPayment(action: RazorpayCheckoutAction, clientFailed = false) {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        const trace = await getTrace(action.trace_id);
+        const payment = trace.payments.find((entry) => entry.id === action.payment_id);
+        if (payment?.status === "captured") {
+          setPaymentStatus("captured"); setStage("captured"); clearCart();
+          navigate(`/order/${encodeURIComponent(preview?.checkout_id || "")}/${encodeURIComponent(action.trace_id)}`, { replace: true });
+          return;
+        }
+        if (payment?.status === "failed") {
+          setPaymentStatus("failed"); setPaymentDetail(payment.failure_detail || "The payment attempt was recorded, but no successful capture exists in Mandate Ledger."); setStage("failed"); return;
+        }
+      } catch { /* a later poll may observe the verified webhook state */ }
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+    }
+    if (clientFailed) setPaymentDetail("Payment attempt failed. Awaiting server confirmation.");
+  }
 
-      <header className="mb-8">
-        <h1 className="text-3xl font-bold tracking-tight text-slate-950">Secure Checkout</h1>
-        <p className="mt-1 text-slate-500">Review your order and authorize payment with Mandate Ledger.</p>
-      </header>
+  if (isLoading) return <LoadingState />;
+  if (!preview) return <ErrorState message={error || "Unable to load checkout."} expired={checkoutExpired} onRefresh={() => void refreshCheckout()} />;
 
-      <div className="grid gap-8 lg:grid-cols-3">
-        <div className="lg:col-span-2 space-y-6">
-          <section className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
-            <div className="border-b border-slate-200 px-5 py-4 sm:px-6">
-              <h2 className="text-lg font-semibold text-slate-950">
-                {preview.itemCount} item{preview.itemCount !== 1 ? "s" : ""}
-              </h2>
-            </div>
-            <div className="divide-y divide-slate-100 p-5 sm:p-6">
-              {preview.items.map((item: CheckoutPreviewResponse["items"][0]) => (
-                <div key={item.product_id} className="py-4 flex gap-4">
-                  <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-slate-100" aria-hidden="true">
-                    <div className="h-full w-full bg-slate-200" />
-                  </div>
-                  <div className="flex flex-1 flex-col">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0">
-                        <p className="font-medium text-slate-950">{item.name}</p>
-                        <p className="mt-0.5 text-sm text-slate-500">{item.merchant}</p>
-                        <p className="mt-0.5 text-sm font-medium text-slate-950">{formatPrice(item.line_amount)}</p>
-                      </div>
-                    </div>
-                    <div className="mt-4 flex items-center gap-3">
-                      <span className="text-sm text-slate-500">Qty: {item.quantity}</span>
-                      <span className="text-sm font-medium text-slate-950">{formatPrice(item.unit_amount)} each</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        </div>
-
-        <CheckoutSummary preview={preview} onAuthorize={handleAuthorize} />
-      </div>
-
-      <div className="mt-8 rounded-2xl bg-slate-50 p-5">
-        <div className="flex items-start gap-3">
-          <CheckCircle className="size-5 text-emerald-600 shrink-0 mt-0.5" aria-hidden="true" />
-          <div>
-            <h3 className="font-semibold text-slate-950">What happens next?</h3>
-            <ul className="mt-2 space-y-1.5 text-sm text-slate-600">
-              <li>You'll be redirected to the AI Assistant to create a payment authorization.</li>
-              <li>Review and approve the exact amount (₹{formatPrice(preview.amount).replace("₹", "")}).</li>
-              <li>Payment executes only after your explicit confirmation.</li>
-              <li>Receive cryptographic proof of the transaction.</li>
-            </ul>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+  return <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+    <Link to="/cart" className="mb-6 inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-950"><ArrowLeft className="size-4" />Back to Cart</Link>
+    <header className="mb-8"><h1 className="text-3xl font-bold tracking-tight text-slate-950">Secure Checkout</h1><p className="mt-1 text-slate-500">Your commerce total is server-verified before Mandate Ledger authorization.</p></header>
+    <div className="grid gap-8 lg:grid-cols-3"><div className="space-y-6 lg:col-span-2">
+      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white"><div className="border-b border-slate-200 px-5 py-4 sm:px-6"><h2 className="text-lg font-semibold text-slate-950">Trusted order · {preview.itemCount} item{preview.itemCount === 1 ? "" : "s"}</h2></div><div className="divide-y divide-slate-100 px-5 sm:px-6">{preview.items.map((item) => <div key={item.product_id} className="flex justify-between gap-4 py-5"><div><p className="font-medium text-slate-950">{item.name}</p><p className="mt-0.5 text-sm text-slate-500">{item.merchant} · Qty {item.quantity}</p><p className="mt-1 text-sm text-slate-600">{formatPrice(item.unit_amount)} each</p></div><p className="shrink-0 font-semibold text-slate-950">{formatPrice(item.line_amount)}</p></div>)}</div></section>
+      {stage === "review" && <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6"><h2 className="font-semibold text-slate-950">Authorization details</h2><p className="mt-1 text-sm text-slate-500">The cart total is trusted by the server. Choose a maximum spend limit and approve it explicitly.</p><label className="mt-4 block text-sm font-medium text-slate-700" htmlFor="maximum-spend">Maximum authorization (INR)</label><input id="maximum-spend" type="number" min="1" step="0.01" value={maximumSpend} onChange={(event) => setMaximumSpend(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-slate-950" /><label className="mt-4 block text-sm font-medium text-slate-700" htmlFor="valid-until">Valid until</label><input id="valid-until" type="datetime-local" value={validUntil} min={new Date().toISOString().slice(0, 16)} onChange={(event) => setValidUntil(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-slate-950" /></section>}
+      {intentConfirmation && stage === "authorization_pending" && <ConfirmationCard confirmation={intentConfirmation} disabled={isBusy} onConfirm={() => void approveAuthorization()} onCancel={() => navigate("/cart")} />}
+      {paymentConfirmation && stage === "payment_confirmation" && <ConfirmationCard confirmation={paymentConfirmation} disabled={isBusy} onConfirm={() => void confirmPayment()} onCancel={() => setPaymentStatus("dismissed")} />}
+      {policyViolation && <PolicyViolationCard violation={policyViolation} disabled={isBusy} onModifyPurchase={() => navigate("/cart")} onRequestNewAuthorization={() => navigate("/cart")} />}
+      {paymentStatus && <PaymentStatusCard status={paymentStatus} detail={paymentDetail} amount={preview.amount} currency={preview.currency} traceId={paymentAction?.trace_id || preview.trace_id || undefined} onRetry={paymentStatus === "failed" ? () => void confirmPayment() : undefined} />}
+      {error && <div className="flex gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"><AlertCircle className="size-5 shrink-0" />{error}</div>}
+    </div><CheckoutSummary preview={preview} onAuthorize={() => void startAuthorization()} disabled={isBusy || stage !== "review"} /></div>
+    <div className="mt-8 rounded-2xl bg-slate-50 p-5"><div className="flex gap-3"><CheckCircle className="mt-0.5 size-5 shrink-0 text-emerald-600" /><p className="text-sm text-slate-600"><strong className="text-slate-950">Trusted checkout:</strong> products, quantities and total are loaded from a server-side checkout session. Payment starts only after authorization and payment confirmation.</p></div></div>
+  </div>;
 }
+
+function LoadingState() { return <div className="grid min-h-96 place-items-center"><div className="flex flex-col items-center gap-3 text-slate-500"><LoaderCircle className="size-8 animate-spin" /><p>Loading trusted checkout…</p></div></div>; }
+function ErrorState({ message, expired = false, onRefresh }: { message: string; expired?: boolean; onRefresh?: () => void }) { return <div className="mx-auto max-w-md px-4 py-20 text-center"><AlertCircle className="mx-auto size-9 text-red-600" /><h1 className="mt-4 text-2xl font-semibold">{expired ? "Checkout expired" : "Unable to load checkout"}</h1><p className="mt-2 text-slate-500">{expired ? "Your product selection is still available, but its trusted checkout snapshot has expired." : message}</p><div className="mt-6 flex justify-center gap-3">{expired && <button type="button" onClick={onRefresh} className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white">Refresh secure checkout</button>}<Link to="/cart" className="rounded-xl border border-slate-300 px-5 py-3 text-sm font-semibold text-slate-800">Return to cart</Link></div></div>; }

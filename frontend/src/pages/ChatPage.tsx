@@ -1,6 +1,9 @@
 import { type FormEvent, useRef, useState } from "react";
 import { Bot, ExternalLink, Send, ShieldCheck, UserRound } from "lucide-react";
 import { Link } from "react-router-dom";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeSanitize from "rehype-sanitize";
 import ConfirmationCard from "../components/chat/ConfirmationCard";
 import PolicyViolationCard from "../components/chat/PolicyViolationCard";
 import PaymentStatusCard from "../components/payment/PaymentStatusCard";
@@ -287,8 +290,8 @@ function ChatPage() {
                         isUser ? "items-end" : "items-start"
                       }`}
                     >
-                      <p
-                        className={`rounded-2xl px-4 py-3 text-sm leading-6 ${
+                      <div
+                        className={`rounded-2xl px-4 py-3 text-sm leading-7 ${
                           isUser
                             ? "rounded-tr-sm bg-slate-950 text-white"
                             : isError
@@ -296,8 +299,34 @@ function ChatPage() {
                               : "rounded-tl-sm bg-white text-slate-800 shadow-sm ring-1 ring-slate-200"
                         }`}
                       >
-                        {message.content}
-                      </p>
+                        {isUser ? (
+                          <p className="whitespace-pre-wrap">{message.content}</p>
+                        ) : (
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            rehypePlugins={[rehypeSanitize]}
+                            components={{
+                              p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
+                              strong: ({ children }) => <strong className="font-semibold text-slate-950">{children}</strong>,
+                              ul: ({ children }) => <ul className="my-3 list-disc space-y-1 pl-5">{children}</ul>,
+                              ol: ({ children }) => <ol className="my-3 list-decimal space-y-1 pl-5">{children}</ol>,
+                              li: ({ children }) => <li className="pl-1">{children}</li>,
+                              code: ({ children }) => (
+                                <code className="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-800">
+                                  {children}
+                                </code>
+                              ),
+                              blockquote: ({ children }) => (
+                                <blockquote className="border-l-4 border-slate-300 pl-4 my-3 italic text-slate-600">
+                                  {children}
+                                </blockquote>
+                              ),
+                            }}
+                          >
+                            {message.content}
+                          </ReactMarkdown>
+                        )}
+                      </div>
 
                       {message.confirmation && (
                         <ConfirmationCard

@@ -10,10 +10,6 @@ import {
 } from "./consentManager.js";
 
 import {
-    validateCartAgainstIntent,
-} from "./spendCapController.js";
-
-import {
     createOrder,
 } from "./razorpayAdapter.js";
 
@@ -191,24 +187,32 @@ export async function createPaymentForCart(
 
 
     // -----------------------------------------------------
-    // Re-run policy check at payment time
+    // Budget was reserved when this immutable approved Cart was committed.
+    // Re-applying the cumulative cap here would reserve the same Cart twice
+    // and incorrectly block its first payment attempt. Intent status/expiry,
+    // integrity, parent-link, Cart approval and idempotency checks remain.
     // -----------------------------------------------------
-    //
-    // Never assume that because Cart was valid earlier,
-    // it is automatically valid forever.
-    // -----------------------------------------------------
 
-    validateCartAgainstIntent({
+    if (intent.status !== "approved") {
+        const error = new Error(`Payment cannot be created because Intent status is '${intent.status}'`);
+        error.status = 409;
+        error.code = "INTENT_NOT_APPROVED";
+        throw error;
+    }
 
-        intent,
+    if (new Date(intent.valid_until).getTime() <= Date.now()) {
+        const error = new Error("Intent has expired");
+        error.status = 409;
+        error.code = "INTENT_EXPIRED";
+        throw error;
+    }
 
-        amount:
-            cart.amount,
-
-        currency:
-            cart.currency,
-
-    });
+    if (cart.currency !== intent.currency) {
+        const error = new Error("Cart currency does not match Intent currency");
+        error.status = 422;
+        error.code = "CURRENCY_MISMATCH";
+        throw error;
+    }
 
 
     // -----------------------------------------------------
@@ -252,6 +256,15 @@ export async function createPaymentForCart(
 
             status:
                 existingPayment.status,
+
+            // Reconstruct the public checkout contract from persisted,
+            // server-trusted fields. Reuse must never create a second order.
+            checkout: {
+                key_id: process.env.RAZORPAY_KEY_ID,
+                order_id: existingPayment.razorpay_order_id,
+                amount: existingPayment.amount,
+                currency: existingPayment.currency,
+            },
 
         };
 

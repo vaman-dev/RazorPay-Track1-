@@ -51,6 +51,21 @@ const schema = fs.readFileSync(schemaPath, "utf8");
 
 db.exec(schema);
 
+// `CREATE TABLE IF NOT EXISTS` does not add columns to an existing local
+// SQLite database. Keep the Core v1.1 migration additive and idempotent.
+const intentColumns = db.prepare("PRAGMA table_info(intents)").all();
+const intentColumnNames = new Set(intentColumns.map((column) => column.name));
+
+if (!intentColumnNames.has("usage_mode")) {
+    db.exec("ALTER TABLE intents ADD COLUMN usage_mode TEXT NOT NULL DEFAULT 'single_use'");
+}
+
+if (!intentColumnNames.has("policy_json")) {
+    db.exec("ALTER TABLE intents ADD COLUMN policy_json TEXT");
+}
+
+db.exec("CREATE INDEX IF NOT EXISTS idx_carts_intent_status ON carts(intent_id, status)");
+
 
 // =========================================================
 // DATABASE CONNECTION TEST
