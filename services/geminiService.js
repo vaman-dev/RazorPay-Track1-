@@ -364,6 +364,16 @@ MANDATORY RULES:
     checkout Intent as a fallback. If attachment fails, report the backend
     rejection and offer a separate new-authorization request.
 
+20. Trusted checkout attachment is an internal compatibility check, not a
+    separate consent action. Attempt attachment before Cart commitment. A
+    pending Intent must produce INTENT_NOT_APPROVED; never bypass it or create
+    another Intent automatically.
+
+21. Never ask the user for internal Intent, trace, Cart, or checkout IDs when
+    referring to “this”, “same”, “current”, or an existing authorization.
+    Call the relevant tool without those optional internal IDs and let the
+    orchestrator resolve them from authoritative session state.
+
 CART POLICY AUTHORITY RULE:
 
 - When the user explicitly asks to add items to a cart, create a cart,
@@ -406,6 +416,45 @@ TRACE AND PAYMENT TRUTH RULES:
 
 - Never invent trace values.
 `;
+
+
+// =========================================================
+// DYNAMIC TEMPORAL GROUNDING
+// =========================================================
+//
+// Relative dates must be resolved against the server's actual current
+// instant, not model memory. Build this immediately before every Gemini
+// request so long-running processes never retain a stale timestamp.
+//
+function buildSystemInstruction() {
+
+    const now =
+        new Date()
+            .toISOString();
+
+
+    return `${SYSTEM_INSTRUCTION}
+
+CURRENT TIME CONTEXT:
+
+The authoritative current server timestamp is:
+
+${now}
+
+DATE AND TIME RULES:
+
+- Interpret relative expressions such as "today", "tomorrow", "tonight",
+  "in two hours", and "later today" relative to the authoritative timestamp
+  above.
+- If the user explicitly provides a timezone such as IST, preserve and
+  respect that timezone when resolving the requested expiration.
+- Never assume a different current date.
+- Never use example timestamps as default expiration values.
+- If a relative date or time cannot be resolved safely, ask the user for
+  clarification instead of guessing.
+`;
+
+}
 
 
 // =========================================================
@@ -809,7 +858,7 @@ const tools = [
                 parameters: {
                     type: Type.OBJECT,
                     properties: { checkout_id: { type: Type.STRING }, intent_id: { type: Type.STRING } },
-                    required: ["checkout_id", "intent_id"],
+                    required: ["checkout_id"],
                 },
             },
 
@@ -864,12 +913,6 @@ const tools = [
                         },
 
                     },
-
-                    required: [
-
-                        "trace_id",
-
-                    ],
 
                 },
 
@@ -1257,7 +1300,7 @@ async function runChatTurn(
             config: {
 
                 systemInstruction:
-                    SYSTEM_INSTRUCTION,
+                    buildSystemInstruction(),
 
                 tools,
 
@@ -1536,7 +1579,7 @@ async function sendFunctionResult(
             config: {
 
                 systemInstruction:
-                    SYSTEM_INSTRUCTION,
+                    buildSystemInstruction(),
 
                 tools,
 

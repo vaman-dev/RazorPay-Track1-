@@ -41,6 +41,10 @@ import {
 } from "./spendCapController.js";
 
 import {
+    validateIntentScope,
+} from "./scopePolicyService.js";
+
+import {
     runChatTurn,
     sendFunctionResult,
 } from "./geminiService.js";
@@ -729,7 +733,9 @@ function extractClientAction(
 function buildAuthorizationContext(session) {
     const authorizations = (session.state.intent_ids || []).map((intentId) => {
         const intent = getIntentById(intentId);
-        if (!intent || intent.status !== "approved" || new Date(intent.valid_until).getTime() <= Date.now()) return null;
+        if (!intent) return null;
+
+        const expired = new Date(intent.valid_until).getTime() <= Date.now();
 
         let policy = null;
         try {
@@ -744,6 +750,8 @@ function buildAuthorizationContext(session) {
             trace_id: intent.trace_id,
             scope: intent.scope,
             status: intent.status,
+            effective_status: expired ? "expired" : intent.status,
+            is_expired: expired,
             usage_mode: intent.usage_mode,
             currency: intent.currency,
             max_amount: Number(intent.max_amount),
@@ -1055,6 +1063,76 @@ function resolveToolCallForSession(
 ) {
 
     if (
+        functionCall.name === "create_checkout_intent" &&
+        session?.state?.explicit_existing_authorization
+    ) {
+        const error = new Error("The user explicitly requested an existing authorization. Attach that Intent or report its backend rejection; do not create another authorization.");
+        error.code = "EXISTING_AUTHORIZATION_REQUIRED";
+        error.status = 409;
+        throw error;
+    }
+
+    if (functionCall.name === "attach_checkout_intent") {
+        const requestedIntentId = functionCall.args?.intent_id;
+        const ownedIntentIds = session?.state?.intent_ids || [];
+
+        if (requestedIntentId && !ownedIntentIds.includes(requestedIntentId)) {
+            const error = new Error("The requested authorization does not belong to this chat session.");
+            error.code = "INTENT_NOT_AVAILABLE";
+            error.status = 400;
+            throw error;
+        }
+
+        let intentId = requestedIntentId || null;
+
+        // Explicit references such as “this authorization” bind to the
+        // session-owned active Intent even when it is expired. The bridge must
+        // receive it so it can return the authoritative INTENT_EXPIRED error.
+        if (!intentId && session?.state?.explicit_existing_authorization) {
+            intentId = session.state.active_intent_id;
+        }
+
+        // Otherwise choose a session-owned scope/currency-compatible Intent.
+        // Do not pre-filter expiry or approval: those authoritative errors
+        // belong to the commerce bridge.
+        if (!intentId) {
+            const checkout = getCheckoutSession(functionCall.args?.checkout_id);
+            const candidates = ownedIntentIds
+                .map((id) => getIntentById(id))
+                .filter(Boolean)
+                .filter((intent) => {
+                    if (intent.currency !== checkout.currency) return false;
+                    try {
+                        validateIntentScope(intent, checkout);
+                        return true;
+                    } catch {
+                        return false;
+                    }
+                });
+
+            const activeCandidate = candidates.find(
+                (intent) => intent.id === session?.state?.active_intent_id
+            );
+            intentId = activeCandidate?.id || (candidates.length === 1 ? candidates[0].id : null);
+        }
+
+        if (!intentId) {
+            const error = new Error("No unambiguous session authorization matches this trusted checkout.");
+            error.code = "INTENT_NOT_AVAILABLE";
+            error.status = 409;
+            throw error;
+        }
+
+        return {
+            ...functionCall,
+            args: {
+                ...functionCall.args,
+                intent_id: intentId,
+            },
+        };
+    }
+
+    if (
         functionCall.name !==
         "get_trace"
     ) {
@@ -1063,8 +1141,9 @@ function resolveToolCallForSession(
     }
 
 
-    const sessionTraceId =
-        session?.state?.trace_id;
+    const activeIntentId = session?.state?.active_intent_id;
+    const activeIntentTraceId = session?.state?.traces_by_intent?.[activeIntentId];
+    const sessionTraceId = activeIntentTraceId || session?.state?.trace_id;
 
 
     const requestedTraceId =
@@ -1363,19 +1442,6 @@ function appendFunctionResultToHistory(
     functionCall,
     toolResult
 ) {
-
-    if (
-        functionCall.name === "create_checkout_intent" &&
-        session?.state?.explicit_existing_authorization
-    ) {
-        const error = new Error(
-            "The user explicitly requested an existing authorization. Attach that Intent or report its backend rejection; do not create another authorization."
-        );
-        error.code = "EXISTING_AUTHORIZATION_REQUIRED";
-        error.status = 409;
-        throw error;
-    }
-
     const functionResponse = {
 
         name:
@@ -1409,66 +1475,6 @@ function appendFunctionResultToHistory(
 
                 {
                     functionResponse,
-
-                },
-
-            ],
-
-        },
-
-    ];
-
-}
-
-
-// =========================================================
-// PERSIST BACKEND-INITIATED CONFIRMATION CALL
-// =========================================================
-//
-// create_intent deterministically requires an approval gate.
-// Record that backend-created call as model history before its
-// eventual FunctionResponse so the next Gemini turn receives
-// a valid function-call / function-response sequence.
-//
-function appendFunctionCallToHistory(
-    history,
-    functionCall
-) {
-
-    const modelFunctionCall = {
-
-        name:
-            functionCall.name,
-
-        args:
-            functionCall.args || {},
-
-    };
-
-
-    if (
-        functionCall.id
-    ) {
-
-        modelFunctionCall.id =
-            functionCall.id;
-
-    }
-
-
-    return [
-
-        ...history,
-
-        {
-            role:
-                "model",
-
-            parts: [
-
-                {
-                    functionCall:
-                        modelFunctionCall,
 
                 },
 
@@ -2035,7 +2041,8 @@ async function processGeminiResult({
         mutationCount >= 1 &&
         MUTATING_TOOLS.has(
             resolvedFunctionCall.name
-        )
+        ) &&
+        resolvedFunctionCall.name !== "attach_checkout_intent"
     ) {
 
         const confirmation =
@@ -2160,14 +2167,14 @@ const confirmation =
 
         session.pendingConfirmation = {
 
+            source:
+                "application",
+
             call:
                 approvalCall,
 
             history:
-                appendFunctionCallToHistory(
-                    historyWithIntentResult,
-                    approvalCall
-                ),
+                historyWithIntentResult,
 
             confirmation,
 
@@ -2495,6 +2502,22 @@ updateSessionState(
         toolResult
     );
 
+    // Application-created confirmations (currently Intent approval) were not
+    // model FunctionCalls. Do not send a synthetic FunctionResponse to Gemini.
+    if (pending.source === "application") {
+        session.history = pending.history;
+        touchSession(session);
+        return {
+            session_id: session.id,
+            type: "message",
+            message: toolResult.success
+                ? buildFastToolResponse(pending.call, toolResult)
+                : (toolResult.error?.message || "Authorization could not be approved."),
+            error: toolResult.success ? undefined : toolResult.error,
+            action: null,
+        };
+    }
+
 
     // =========================================================
     // INITIATE PAYMENT FAST PATH
@@ -2742,6 +2765,17 @@ async function cancelPendingConfirmation(
 
     session.pendingConfirmation =
         null;
+
+    if (pending.source === "application") {
+        session.history = pending.history;
+        touchSession(session);
+        return {
+            session_id: session.id,
+            type: "message",
+            message: "Authorization approval cancelled. The Intent remains pending.",
+            action: null,
+        };
+    }
 
 
     // =========================================================
