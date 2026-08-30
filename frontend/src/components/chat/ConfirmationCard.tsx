@@ -1,5 +1,6 @@
 import { Check, CreditCard, ShieldCheck, X } from "lucide-react";
 import type { ChatConfirmation } from "../../types/chat";
+import { formatMoney, friendlyRestriction } from "../../utils/presentation";
 
 interface ConfirmationCardProps {
   confirmation: ChatConfirmation;
@@ -7,16 +8,6 @@ interface ConfirmationCardProps {
   resolved?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
-}
-
-function formatMoney(amount?: number, currency = "INR") {
-  if (typeof amount !== "number") return null;
-
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 2,
-  }).format(amount / 100);
 }
 
 function ConfirmationCard({
@@ -27,12 +18,39 @@ function ConfirmationCard({
   onCancel,
 }: ConfirmationCardProps) {
   const details = confirmation.details;
-  const isPayment = confirmation.action === "initiate_payment";
-  const amount = isPayment ? details?.amount : details?.max_amount;
+  const isIntent = confirmation.action === "approve_intent";
+  const isPayment = ["initiate_payment", "initiate_checkout_payment"].includes(confirmation.action);
+  const isPurchase = ["create_cart", "commit_checkout_cart"].includes(confirmation.action);
+  const amount = isIntent ? details?.max_amount : details?.amount;
   const formattedAmount = isPayment
     ? details?.formatted_amount
-    : details?.formatted_max_amount;
-  const amountText = formattedAmount || formatMoney(amount, details?.currency);
+    : isIntent
+      ? details?.formatted_max_amount
+      : details?.formatted_amount;
+  const amountText = typeof amount === "number"
+    ? formatMoney(amount, details?.currency, 2)
+    : formattedAmount || null;
+  const safeTitle = isIntent
+    ? "Approve this authorization?"
+    : isPayment
+      ? "Confirm payment"
+      : isPurchase
+        ? "Confirm this purchase?"
+        : "Confirm this action?";
+  const subtitle = isIntent
+    ? "Review the authorization before approving"
+    : isPayment
+      ? "Payment begins only after your confirmation"
+      : isPurchase
+        ? "Review the purchase commitment"
+        : "Your confirmation is required";
+  const confirmLabel = isIntent
+    ? "Approve authorization"
+    : isPayment
+      ? amountText ? `Pay ${amountText}` : "Confirm payment"
+      : isPurchase
+        ? "Confirm purchase"
+        : "Confirm";
 
   return (
     <section className="mt-3 w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -46,10 +64,9 @@ function ConfirmationCard({
         </div>
         <div>
           <p className="text-sm font-semibold text-slate-950">
-            {confirmation.title ||
-              (isPayment ? "Confirm payment" : "Authorization required")}
+            {safeTitle}
           </p>
-          <p className="mt-0.5 text-xs text-slate-500">Explicit approval required</p>
+          <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p>
         </div>
       </div>
 
@@ -58,7 +75,7 @@ function ConfirmationCard({
         {details?.merchant && <DetailRow label="Merchant" value={details.merchant} />}
         {amountText && (
           <DetailRow
-            label={isPayment ? "Payment amount" : "Maximum spend"}
+            label={isIntent ? "Maximum authorization" : isPayment ? "Payment amount" : "Purchase amount"}
             value={amountText}
             emphasized
           />
@@ -73,16 +90,46 @@ function ConfirmationCard({
           <DetailRow label="Allowed categories" value={details.policy.categories.join(", ")} />
         ) : null}
         {!isPayment && details?.policy?.merchant_ids?.length ? (
-          <DetailRow label="Allowed merchants" value={details.policy.merchant_ids.join(", ")} />
+          <DetailRow label="Allowed merchants" value={friendlyRestriction(details.policy.merchant_ids.length, "merchant")} />
         ) : null}
         {!isPayment && details?.policy?.product_ids?.length ? (
-          <DetailRow label="Allowed products" value={details.policy.product_ids.join(", ")} />
+          <DetailRow label="Allowed products" value={friendlyRestriction(details.policy.product_ids.length, "product")} />
         ) : null}
         {details?.valid_until && (
           <DetailRow
             label="Valid until"
             value={new Date(details.valid_until).toLocaleString()}
           />
+        )}
+        {isPurchase && details?.items?.length ? (
+          <div className="rounded-xl bg-slate-50 p-3">
+            {details.items.map((item, index) => (
+              <div key={`${item.name || "Product"}-${index}`} className="flex justify-between gap-4 text-sm">
+                <span className="font-medium text-slate-900">{item.name || "Trusted product"}</span>
+                <span className="shrink-0 text-slate-500">Qty {item.quantity || 1}</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {isIntent && details?.usage_mode === "reusable_budget" && (
+          <p className="rounded-xl bg-slate-50 px-3 py-2.5 text-sm leading-5 text-slate-600">
+            This authorization can cover multiple purchases up to the approved cumulative limit.
+          </p>
+        )}
+        {isIntent && details?.usage_mode === "single_use" && (
+          <p className="rounded-xl bg-slate-50 px-3 py-2.5 text-sm leading-5 text-slate-600">
+            This authorization can be used for one purchase only.
+          </p>
+        )}
+        {isPurchase && details?.usage_mode === "single_use" && (
+          <p className="rounded-xl bg-amber-50 px-3 py-2.5 text-sm leading-5 text-amber-900">
+            Confirming this purchase will use your single-use authorization.
+          </p>
+        )}
+        {isPayment && (
+          <p className="rounded-xl bg-slate-50 px-3 py-2.5 text-sm leading-5 text-slate-600">
+            Secure Razorpay Checkout will open after confirmation.
+          </p>
         )}
       </div>
 
@@ -103,7 +150,7 @@ function ConfirmationCard({
           className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
         >
           <Check className="size-4" aria-hidden="true" />
-          {isPayment ? "Confirm payment" : "Approve"}
+          {confirmLabel}
         </button>
       </div>
 

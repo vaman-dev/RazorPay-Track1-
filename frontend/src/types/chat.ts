@@ -113,5 +113,8 @@ export interface ChatMessage {
   paymentStatusDetail?: string;
   paymentAmount?: number;
   paymentCurrency?: string;
+  paymentAvailableAmount?: number;
+  paymentUsageMode?: "single_use" | "reusable_budget";
+  paymentChainValid?: boolean;
   traceId?: string;
 }

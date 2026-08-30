@@ -11,6 +11,7 @@ import { openRazorpayCheckout } from "../services/razorpay";
 import { getTrace } from "../services/traceApi";
 import type { PolicyViolation, RazorpayCheckoutAction } from "../types/chat";
 import type { CheckoutStage } from "../types/commerce";
+import { customerFacingText } from "../utils/presentation";
 
 function defaultValidity() {
   const value = new Date(Date.now() + 24 * 60 * 60 * 1000);
@@ -37,6 +38,9 @@ export default function CheckoutPage() {
   const [paymentAction, setPaymentAction] = useState<RazorpayCheckoutAction | null>(null);
   const [paymentStatus, setPaymentStatus] = useState<"opening" | "submitted" | "verifying" | "captured" | "dismissed" | "failed" | null>(null);
   const [paymentDetail, setPaymentDetail] = useState<string>();
+  const [paymentAvailableAmount, setPaymentAvailableAmount] = useState<number>();
+  const [paymentUsageMode, setPaymentUsageMode] = useState<"single_use" | "reusable_budget">();
+  const [paymentChainValid, setPaymentChainValid] = useState<boolean>();
   const [checkoutExpired, setCheckoutExpired] = useState(false);
 
   function handleCheckoutError(requestError: unknown, fallback: string) {
@@ -44,7 +48,7 @@ export default function CheckoutPage() {
     if (apiError.code === "CHECKOUT_SESSION_NOT_FOUND" || apiError.code === "CHECKOUT_SESSION_EXPIRED") {
       setCheckoutExpired(true); setPreview(null); setError(null); return;
     }
-    setError(requestError instanceof Error ? requestError.message : fallback);
+    setError(customerFacingText(requestError instanceof Error ? requestError.message : fallback));
   }
 
   async function refreshCheckout() {
@@ -54,7 +58,7 @@ export default function CheckoutPage() {
       const trustedCheckout = await getCheckoutPreview({ items: cart.items.map((item) => ({ product_id: item.product.id, quantity: item.quantity })) });
       setPreview(trustedCheckout); setIntent(null); setStage("review"); setMaximumSpend(String(trustedCheckout.amount / 100));
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Failed to refresh checkout.");
+      setError(customerFacingText(requestError instanceof Error ? requestError.message : "Failed to refresh checkout."));
     } finally { setIsLoading(false); }
   }
 
@@ -70,7 +74,7 @@ export default function CheckoutPage() {
         const trustedCheckout = await getCheckoutPreview({ items: cart.items.map((item) => ({ product_id: item.product.id, quantity: item.quantity })) });
         if (mounted) { setPreview(trustedCheckout); setMaximumSpend(String(trustedCheckout.amount / 100)); setError(null); setCheckoutExpired(false); }
       } catch (requestError) {
-        if (mounted) setError(requestError instanceof Error ? requestError.message : "Failed to load checkout preview.");
+        if (mounted) setError(customerFacingText(requestError instanceof Error ? requestError.message : "Failed to load checkout preview."));
       } finally {
         if (mounted) setIsLoading(false);
       }
@@ -81,7 +85,7 @@ export default function CheckoutPage() {
   const intentConfirmation = useMemo(() => !preview || !intent ? null : ({
     action: "approve_intent",
     title: "Approve authorization?",
-    details: { scope: intent.scope, merchant: preview.merchant, max_amount: intent.max_amount, currency: intent.currency, valid_until: intent.valid_until },
+    details: { scope: intent.scope, merchant: preview.merchant, max_amount: intent.max_amount, currency: intent.currency, valid_until: intent.valid_until, usage_mode: intent.usage_mode },
   }), [intent, preview]);
 
   const paymentConfirmation = useMemo(() => !preview ? null : ({
@@ -154,11 +158,17 @@ export default function CheckoutPage() {
         const trace = await getTrace(action.trace_id);
         const payment = trace.payments.find((entry) => entry.id === action.payment_id);
         if (payment?.status === "captured") {
+          setPaymentAvailableAmount(Number(trace.summary.remaining_amount ?? 0));
+          setPaymentUsageMode(trace.intent?.usage_mode);
+          setPaymentChainValid(trace.integrity.chain_valid);
           setPaymentStatus("captured"); setStage("captured"); clearCart();
           navigate(`/order/${encodeURIComponent(preview?.checkout_id || "")}/${encodeURIComponent(action.trace_id)}`, { replace: true });
           return;
         }
         if (payment?.status === "failed") {
+          setPaymentAvailableAmount(Number(trace.summary.remaining_amount ?? 0));
+          setPaymentUsageMode(trace.intent?.usage_mode);
+          setPaymentChainValid(trace.integrity.chain_valid);
           setPaymentStatus("failed"); setPaymentDetail(payment.failure_detail || "The payment attempt was recorded, but no successful capture exists in Mandate Ledger."); setStage("failed"); return;
         }
       } catch { /* a later poll may observe the verified webhook state */ }
@@ -179,7 +189,7 @@ export default function CheckoutPage() {
       {intentConfirmation && stage === "authorization_pending" && <ConfirmationCard confirmation={intentConfirmation} disabled={isBusy} onConfirm={() => void approveAuthorization()} onCancel={() => navigate("/cart")} />}
       {paymentConfirmation && stage === "payment_confirmation" && <ConfirmationCard confirmation={paymentConfirmation} disabled={isBusy} onConfirm={() => void confirmPayment()} onCancel={() => setPaymentStatus("dismissed")} />}
       {policyViolation && <PolicyViolationCard violation={policyViolation} disabled={isBusy} onModifyPurchase={() => navigate("/cart")} onRequestNewAuthorization={() => navigate("/cart")} />}
-      {paymentStatus && <PaymentStatusCard status={paymentStatus} detail={paymentDetail} amount={preview.amount} currency={preview.currency} traceId={paymentAction?.trace_id || preview.trace_id || undefined} onRetry={paymentStatus === "failed" ? () => void confirmPayment() : undefined} />}
+      {paymentStatus && <PaymentStatusCard status={paymentStatus} detail={paymentDetail} amount={preview.amount} currency={preview.currency} traceId={paymentAction?.trace_id || preview.trace_id || undefined} availableAmount={paymentAvailableAmount} usageMode={paymentUsageMode} chainValid={paymentChainValid} onRetry={paymentStatus === "failed" ? () => void confirmPayment() : undefined} />}
       {error && <div className="flex gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"><AlertCircle className="size-5 shrink-0" />{error}</div>}
     </div><CheckoutSummary preview={preview} onAuthorize={() => void startAuthorization()} disabled={isBusy || stage !== "review"} /></div>
     <div className="mt-8 rounded-2xl bg-slate-50 p-5"><div className="flex gap-3"><CheckCircle className="mt-0.5 size-5 shrink-0 text-emerald-600" /><p className="text-sm text-slate-600"><strong className="text-slate-950">Trusted checkout:</strong> products, quantities and total are loaded from a server-side checkout session. Payment starts only after authorization and payment confirmation.</p></div></div>

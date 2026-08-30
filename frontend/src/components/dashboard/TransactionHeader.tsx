@@ -1,27 +1,23 @@
-import { CheckCircle2, Copy, ShieldCheck } from "lucide-react";
+import { CheckCircle2, ShieldCheck } from "lucide-react";
 import type { TraceData } from "../../types/trace";
+import { formatMoney, humanizeStatus } from "../../utils/presentation";
 
-interface TransactionHeaderProps {
-  trace: TraceData;
-  onCopyTraceId: () => void;
-}
-
-function formatMoney(amount: number | string, currency = "INR") {
-  return new Intl.NumberFormat("en-IN", { style: "currency", currency }).format(Number(amount) / 100);
-}
-
-function TransactionHeader({ trace, onCopyTraceId }: TransactionHeaderProps) {
+function TransactionHeader({ trace }: { trace: TraceData }) {
   const capturedAmount = trace.summary.payments.captured_amount;
   const latestPayment = trace.payments.at(-1);
   const status = latestPayment?.status || "pending";
   const reusable = trace.intent?.usage_mode === "reusable_budget";
+  const singleUseConsumed = !reusable && trace.summary.carts.approved > 0;
   const title = reusable
-    ? "Reusable authorization"
+    ? `${trace.intent?.scope || "Reusable"} authorization`
     : status === "captured" && trace.integrity.chain_valid
-    ? "Verified transaction"
+    ? trace.intent?.scope || "Verified purchase"
     : status === "failed"
-      ? "Failed payment trace"
-      : "Transaction trace";
+      ? "Payment needs attention"
+      : trace.intent?.scope || "Purchase authorization";
+  const displayStatus = reusable
+    ? trace.intent?.status === "approved" ? "Active" : humanizeStatus(trace.intent?.status)
+    : singleUseConsumed ? "Used" : humanizeStatus(trace.intent?.status || status);
 
   return (
     <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
@@ -35,17 +31,12 @@ function TransactionHeader({ trace, onCopyTraceId }: TransactionHeaderProps) {
             <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950 sm:text-3xl">
               {title}
             </h1>
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-slate-500">
-              <span className="font-mono text-xs">{trace.trace_id}</span>
-              <button type="button" onClick={onCopyTraceId} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Copy trace ID">
-                <Copy className="size-3.5" />
-              </button>
-            </div>
+            <p className="mt-3 text-sm text-slate-500">Transaction integrity: {trace.integrity.chain_valid ? "Verified" : "Needs attention"}</p>
           </div>
         </div>
         <div className="rounded-2xl bg-slate-950 px-5 py-4 text-white sm:min-w-48">
           <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">{reusable ? "Authorization status" : "Payment status"}</p>
-          <p className="mt-1 text-lg font-semibold capitalize">{reusable ? trace.intent?.status || "pending" : status}</p>
+          <p className="mt-1 text-lg font-semibold">{displayStatus}</p>
           {capturedAmount > 0 && <p className="mt-1 text-sm text-slate-300">{formatMoney(capturedAmount, trace.summary.currency || "INR")} captured</p>}
           {reusable && <p className="mt-1 text-sm text-slate-300">{trace.summary.carts.approved} Carts · {trace.summary.payments.captured} captured · {trace.summary.payments.failed} failed</p>}
         </div>

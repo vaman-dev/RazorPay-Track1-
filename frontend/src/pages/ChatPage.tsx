@@ -15,6 +15,7 @@ import {
 import { openRazorpayCheckout } from "../services/razorpay";
 import { getTrace } from "../services/traceApi";
 import type { ChatMessage, ChatResponse, RazorpayCheckoutAction } from "../types/chat";
+import { customerFacingText } from "../utils/presentation";
 
 function createMessageId() {
   return crypto.randomUUID();
@@ -61,11 +62,12 @@ function ChatPage() {
     messageId: string,
     paymentStatus: NonNullable<ChatMessage["paymentStatus"]>,
     paymentStatusDetail?: string,
+    context?: Pick<ChatMessage, "paymentAvailableAmount" | "paymentUsageMode" | "paymentChainValid">,
   ) {
     setMessages((currentMessages) =>
       currentMessages.map((message) =>
         message.id === messageId
-          ? { ...message, paymentStatus, paymentStatusDetail }
+          ? { ...message, paymentStatus, paymentStatusDetail, ...context }
           : message,
       ),
     );
@@ -112,7 +114,11 @@ function ChatPage() {
         const payment = trace.payments.find((entry) => entry.id === action.payment_id);
 
         if (payment?.status === "captured") {
-          updatePaymentStatus(messageId, "captured");
+          updatePaymentStatus(messageId, "captured", undefined, {
+            paymentAvailableAmount: Number(trace.summary.remaining_amount ?? 0),
+            paymentUsageMode: trace.intent?.usage_mode,
+            paymentChainValid: trace.integrity.chain_valid,
+          });
           return;
         }
 
@@ -121,6 +127,11 @@ function ChatPage() {
             messageId,
             "failed",
             payment.failure_detail || "The payment attempt was recorded, but no successful capture exists in Mandate Ledger.",
+            {
+              paymentAvailableAmount: Number(trace.summary.remaining_amount ?? 0),
+              paymentUsageMode: trace.intent?.usage_mode,
+              paymentChainValid: trace.integrity.chain_valid,
+            },
           );
           return;
         }
@@ -208,7 +219,7 @@ function ChatPage() {
   }
 
   function addErrorMessage(error: unknown, fallbackMessage: string) {
-    const content = error instanceof Error ? error.message : fallbackMessage;
+    const content = customerFacingText(error instanceof Error ? error.message : fallbackMessage);
 
     setMessages((currentMessages) => [
       ...currentMessages,
@@ -286,12 +297,12 @@ function ChatPage() {
                       )}
                     </div>
                     <div
-                      className={`flex max-w-[85%] flex-col sm:max-w-[75%] ${
-                        isUser ? "items-end" : "items-start"
+                      className={`flex min-w-0 flex-col ${
+                        isUser ? "max-w-[85%] items-end sm:max-w-[75%]" : "w-full max-w-[calc(100%-2.75rem)] items-start sm:max-w-[80%]"
                       }`}
                     >
                       <div
-                        className={`rounded-2xl px-4 py-3 text-sm leading-7 ${
+                        className={`max-w-full break-words rounded-2xl px-4 py-3 text-sm leading-7 ${
                           isUser
                             ? "rounded-tr-sm bg-slate-950 text-white"
                             : isError
@@ -323,7 +334,7 @@ function ChatPage() {
                               ),
                             }}
                           >
-                            {message.content}
+                            {customerFacingText(message.content)}
                           </ReactMarkdown>
                         )}
                       </div>
@@ -360,11 +371,14 @@ function ChatPage() {
                           amount={message.paymentAmount}
                           currency={message.paymentCurrency}
                           traceId={message.traceId}
+                          availableAmount={message.paymentAvailableAmount}
+                          usageMode={message.paymentUsageMode}
+                          chainValid={message.paymentChainValid}
                           onRetry={message.paymentStatus === "failed" ? retryPayment : undefined}
                         />
                       )}
 
-                      {message.traceId && (
+                      {message.traceId && !message.paymentStatus && (
                         <Link
                           to={`/dashboard/${encodeURIComponent(message.traceId)}`}
                           className="mt-3 inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
@@ -389,7 +403,7 @@ function ChatPage() {
           )}
         </section>
 
-        <form onSubmit={handleSubmit} className="sticky bottom-0 bg-slate-50 pb-2 pt-4">
+        <form onSubmit={handleSubmit} className="sticky bottom-0 z-20 bg-slate-50 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-4">
           <label className="sr-only" htmlFor="chat-message">
             Your message
           </label>

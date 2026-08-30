@@ -73,6 +73,8 @@ export interface CommerceIntent {
   currency: string;
   valid_until: string;
   status: string;
+  usage_mode?: "single_use" | "reusable_budget";
+  policy_json?: string | null;
 }
 
 export async function createCheckoutIntent(checkoutId: string, validUntil: string, maxAmount: number): Promise<CommerceIntent> {
