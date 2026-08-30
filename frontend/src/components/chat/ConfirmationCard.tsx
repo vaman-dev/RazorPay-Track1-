@@ -63,6 +63,21 @@ function ConfirmationCard({
             emphasized
           />
         )}
+        {!isPayment && details?.usage_mode && (
+          <DetailRow
+            label="Authorization type"
+            value={details.usage_mode === "reusable_budget" ? "Reusable budget" : "Single use"}
+          />
+        )}
+        {!isPayment && details?.policy?.categories?.length ? (
+          <DetailRow label="Allowed categories" value={details.policy.categories.join(", ")} />
+        ) : null}
+        {!isPayment && details?.policy?.merchant_ids?.length ? (
+          <DetailRow label="Allowed merchants" value={details.policy.merchant_ids.join(", ")} />
+        ) : null}
+        {!isPayment && details?.policy?.product_ids?.length ? (
+          <DetailRow label="Allowed products" value={details.policy.product_ids.join(", ")} />
+        ) : null}
         {details?.valid_until && (
           <DetailRow
             label="Valid until"

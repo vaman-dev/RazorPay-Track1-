@@ -47,6 +47,12 @@ export interface ConfirmationDetails {
   formatted_amount?: string;
   currency?: string;
   valid_until?: string;
+  usage_mode?: "single_use" | "reusable_budget" | string;
+  policy?: {
+    categories?: string[];
+    merchant_ids?: string[];
+    product_ids?: string[];
+  } | null;
   status?: string;
   items?: Array<{
     name?: string;

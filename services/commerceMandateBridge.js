@@ -24,7 +24,7 @@ function mandateCartInput(checkout, intentId) {
   };
 }
 
-export function createCommerceIntent(checkoutId, validUntil, requestedMaxAmount = null) {
+export function createCommerceIntent(checkoutId, validUntil, requestedMaxAmount = null, usageMode = "reusable_budget") {
   const checkout = getCheckoutSession(checkoutId);
 
   if (checkout.intent_id) {
@@ -45,12 +45,19 @@ export function createCommerceIntent(checkoutId, validUntil, requestedMaxAmount 
     throw error;
   }
 
+  if (!["single_use", "reusable_budget"].includes(usageMode)) {
+    const error = new Error("usage_mode must be single_use or reusable_budget");
+    error.status = 400;
+    error.code = "INVALID_USAGE_MODE";
+    throw error;
+  }
+
   const intent = createIntent({
     scope: checkoutScope(checkout),
     max_amount: maxAmount,
     currency: checkout.currency,
     valid_until: validUntil,
-    usage_mode: "reusable_budget",
+    usage_mode: usageMode,
     policy: {
       categories: [...new Set(checkout.items.map((item) => item.category).filter(Boolean))],
     },
@@ -79,20 +86,14 @@ export function attachCommerceIntent(checkoutId, intentId) {
     error.code = "INTENT_NOT_FOUND";
     throw error;
   }
-  if ((intent.usage_mode || "single_use") !== "reusable_budget") {
-    const error = new Error("Only reusable budget Intents can be attached to another checkout.");
-    error.status = 409;
-    error.code = "INTENT_NOT_REUSABLE";
-    throw error;
-  }
   if (intent.status !== "approved") {
-    const error = new Error("Only an explicitly approved reusable Intent can be attached.");
+    const error = new Error("Only an explicitly approved Intent can be attached.");
     error.status = 409;
     error.code = "INTENT_NOT_APPROVED";
     throw error;
   }
   if (new Date(intent.valid_until).getTime() <= Date.now()) {
-    const error = new Error("The reusable Intent has expired.");
+    const error = new Error("The Intent has expired.");
     error.status = 409;
     error.code = "INTENT_EXPIRED";
     throw error;
@@ -123,8 +124,15 @@ export function attachCommerceIntent(checkoutId, intentId) {
     throw error;
   }
   const budget = getIntentBudgetState(intent.id, intent);
+  if ((intent.usage_mode || "single_use") === "single_use" && budget.committed_amount > 0) {
+    const error = new Error("Single-use Intent has already been committed.");
+    error.status = 409;
+    error.code = "INTENT_ALREADY_COMMITTED";
+    error.details = { ...budget, intent_id: intent.id, usage_mode: "single_use" };
+    throw error;
+  }
   if (checkout.amount > budget.remaining_amount) {
-    const error = new Error("Checkout amount exceeds the remaining reusable authorization.");
+    const error = new Error("Checkout amount exceeds the remaining authorization.");
     error.status = 422;
     error.code = "CAP_EXCEEDED";
     error.details = {

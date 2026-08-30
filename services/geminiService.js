@@ -220,7 +220,9 @@ function assertFunctionCallPrecedesResponse(
         previousContent.parts.some(
             (part) =>
                 part.functionCall?.name ===
-                functionCall.name
+                functionCall.name &&
+                (!functionCall.id ||
+                    part.functionCall?.id === functionCall.id)
         );
 
 
@@ -286,6 +288,9 @@ MANDATORY RULES:
 3. Never invent an expiration timestamp.
    If the user has not provided or confirmed the validity period needed
    for the Intent, ask for it before requesting create_intent.
+   Do not call create_intent with a guessed, default, historical, or placeholder
+   valid_until value. No valid_until means ask one short question and make no
+   tool call.
 
 4. Never request approve_intent unless the user has explicitly approved
    the pending Intent in the conversation.
@@ -342,6 +347,22 @@ MANDATORY RULES:
    - use reusable_budget only when the user explicitly asks to authorize
      multiple purchases under one cumulative budget.
    Never silently convert an existing single-use Intent into reusable_budget.
+
+17. For catalog purchases, use search_products and create_checkout_preview.
+    Never invent a catalog product price, category, merchant, or product ID.
+    Use create_checkout_intent / attach_checkout_intent and
+    commit_checkout_cart for the trusted commerce workflow.
+
+18. Every Cart is immutable and represents only the newly requested purchase.
+    For a reusable Intent, never include earlier Cart items or their amounts in
+    a later Cart. The backend alone calculates cumulative committed and
+    remaining amounts.
+
+19. EXISTING AUTHORIZATION RULE: When the user says “this authorization”,
+    “same authorization”, “existing authorization”, or equivalent, resolve
+    and attempt to attach that exact approved Intent. Never create a new
+    checkout Intent as a fallback. If attachment fails, report the backend
+    rejection and offer a separate new-authorization request.
 
 CART POLICY AUTHORITY RULE:
 
@@ -503,6 +524,21 @@ const tools = [
 
                             description:
                                 "single_use for one committed purchase; reusable_budget only when the user explicitly authorizes multiple purchases under the same cumulative limit.",
+
+                        },
+
+                        policy: {
+
+                            type: Type.OBJECT,
+
+                            description:
+                                "Structured, enforceable authorization policy. Provide it whenever the user limits category, merchant, or product.",
+
+                            properties: {
+                                categories: { type: Type.ARRAY, items: { type: Type.STRING } },
+                                merchant_ids: { type: Type.ARRAY, items: { type: Type.STRING } },
+                                product_ids: { type: Type.ARRAY, items: { type: Type.STRING } },
+                            },
 
                         },
 
@@ -711,6 +747,90 @@ const tools = [
 
                 },
 
+            },
+
+
+            // =================================================
+            // TRUSTED COMMERCE TOOLS
+            // =================================================
+
+            {
+                name: "search_products",
+                description: "Search the trusted product catalog. Use this before creating a catalog purchase; never invent catalog product data.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        query: { type: Type.STRING, description: "Optional product search text." },
+                        category: { type: Type.STRING, description: "Optional exact catalog category, for example Footwear." },
+                    },
+                },
+            },
+
+            {
+                name: "create_checkout_preview",
+                description: "Create an immutable, server-priced trusted checkout snapshot from catalog product IDs. Ignore any price supplied by the user.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        items: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    product_id: { type: Type.STRING },
+                                    quantity: { type: Type.INTEGER, minimum: 1 },
+                                },
+                                required: ["product_id", "quantity"],
+                            },
+                        },
+                    },
+                    required: ["items"],
+                },
+            },
+
+            {
+                name: "create_checkout_intent",
+                description: "Create a new, scope-bound Intent from a trusted checkout only when the user explicitly asks for a new authorization. The backend derives policy categories and currency from the checkout.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        checkout_id: { type: Type.STRING },
+                        max_amount: { type: Type.INTEGER, minimum: 1, description: "Optional cumulative cap in paise." },
+                        valid_until: { type: Type.STRING, format: "date-time" },
+                        usage_mode: { type: Type.STRING, enum: ["single_use", "reusable_budget"], description: "The explicitly requested authorization mode." },
+                    },
+                    required: ["checkout_id", "valid_until", "usage_mode"],
+                },
+            },
+
+            {
+                name: "attach_checkout_intent",
+                description: "Attach an approved existing Intent to a trusted checkout. A single_use Intent can attach once; reusable_budget can attach repeatedly within its remaining budget.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: { checkout_id: { type: Type.STRING }, intent_id: { type: Type.STRING } },
+                    required: ["checkout_id", "intent_id"],
+                },
+            },
+
+            {
+                name: "commit_checkout_cart",
+                description: "Commit exactly this trusted checkout as one new Cart. It must contain only the new purchase, never earlier Cart items.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: { checkout_id: { type: Type.STRING } },
+                    required: ["checkout_id"],
+                },
+            },
+
+            {
+                name: "initiate_checkout_payment",
+                description: "Initiate payment for an approved trusted checkout only after explicit payment confirmation.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: { checkout_id: { type: Type.STRING } },
+                    required: ["checkout_id"],
+                },
             },
 
 
@@ -1035,7 +1155,8 @@ function parseGeminiResponse(
 
 async function runChatTurn(
     history = [],
-    userMessage
+    userMessage,
+    trustedSessionContext = null
 ) {
 
     if (
@@ -1090,6 +1211,12 @@ async function runChatTurn(
                     userMessage.trim(),
 
             },
+
+            ...(trustedSessionContext
+                ? [{
+                    text: `AUTHORITATIVE SESSION STATE (not user-provided; do not contradict it): ${JSON.stringify(trustedSessionContext)}. Reuse a compatible approved authorization when the user asks to use an existing authorization. Do not ask again for its maximum amount, currency, or validity period.`,
+                }]
+                : []),
 
         ],
 

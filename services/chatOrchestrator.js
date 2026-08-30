@@ -13,8 +13,32 @@ import {
 } from "./paymentService.js";
 
 import {
+    computeCheckoutPreview,
+} from "./commerceCheckoutService.js";
+
+import {
+    createCheckoutSession,
+    getCheckoutSession,
+} from "./checkoutSessionService.js";
+
+import {
+    createCommerceIntent,
+    attachCommerceIntent,
+    commitCommerceCart,
+    initializeCommercePayment,
+} from "./commerceMandateBridge.js";
+
+import {
+    getProducts,
+} from "./catalogService.js";
+
+import {
     getTraceById,
 } from "./traceService.js";
+
+import {
+    getIntentBudgetState,
+} from "./spendCapController.js";
 
 import {
     runChatTurn,
@@ -56,6 +80,10 @@ const MUTATING_TOOLS =
         "create_intent",
         "approve_intent",
         "create_cart",
+        "create_checkout_intent",
+        "attach_checkout_intent",
+        "commit_checkout_cart",
+        "initiate_checkout_payment",
         "initiate_payment",
 
     ]);
@@ -70,6 +98,7 @@ const CONFIRMATION_REQUIRED_TOOLS =
     new Set([
 
         "approve_intent",
+        "initiate_checkout_payment",
         "initiate_payment",
 
     ]);
@@ -101,6 +130,11 @@ const session = {
             trace_id: null,
             cart_id: null,
             payment_id: null,
+            checkout_ids: [],
+            cart_ids: [],
+            payment_ids: [],
+            traces_by_intent: {},
+            explicit_existing_authorization: false,
         },
 
         pendingConfirmation:
@@ -451,6 +485,23 @@ async function executeTool(
 
         case "create_cart": {
 
+            // A legacy free-form cart has no trusted product/category/merchant
+            // identifiers. It must never be used to bypass a structured scope
+            // policy; catalog purchases must go through checkout preview.
+            const intent = getIntentById(args.intent_id);
+            let policy = null;
+            try {
+                policy = intent?.policy_json ? JSON.parse(intent.policy_json) : null;
+            } catch {
+                policy = null;
+            }
+            if (policy && ["categories", "merchant_ids", "product_ids"].some((key) => policy[key]?.length)) {
+                const error = new Error("This scoped authorization requires a trusted catalog checkout. Use create_checkout_preview and commit_checkout_cart.");
+                error.code = "TRUSTED_COMMERCE_REQUIRED";
+                error.status = 409;
+                throw error;
+            }
+
             return await createCart({
 
                 intent_id:
@@ -472,6 +523,32 @@ async function executeTool(
             });
 
         }
+
+
+        case "search_products": {
+            const query = String(args.query || "").trim().toLowerCase();
+            const category = String(args.category || "").trim().toLowerCase();
+            return getProducts().filter((product) => {
+                const matchesCategory = !category || product.category.toLowerCase() === category;
+                const haystack = `${product.id} ${product.name} ${product.category} ${product.merchant}`.toLowerCase();
+                return matchesCategory && (!query || haystack.includes(query));
+            }).map(({ id, name, price, currency, merchant, category, stock }) => ({ product_id: id, name, price, currency, merchant, category, stock }));
+        }
+
+        case "create_checkout_preview":
+            return createCheckoutSession(computeCheckoutPreview(args.items));
+
+        case "create_checkout_intent":
+            return createCommerceIntent(args.checkout_id, args.valid_until, args.max_amount ?? null, args.usage_mode);
+
+        case "attach_checkout_intent":
+            return attachCommerceIntent(args.checkout_id, args.intent_id);
+
+        case "commit_checkout_cart":
+            return commitCommerceCart(args.checkout_id);
+
+        case "initiate_checkout_payment":
+            return await initializeCommercePayment(args.checkout_id);
 
 
         // =================================================
@@ -592,8 +669,9 @@ function extractClientAction(
 
 
     if (
-        functionCall.name ===
-        "initiate_payment"
+        ["initiate_payment", "initiate_checkout_payment"].includes(
+            functionCall.name
+        )
     ) {
 
         const payment =
@@ -643,6 +721,43 @@ function extractClientAction(
 
 
     return null;
+}
+
+// Re-ground every ordinary Gemini turn in backend-owned authorization state.
+// Session IDs are only pointers; Intent status, policy, and budget are always
+// read from the ledger immediately before the model is called.
+function buildAuthorizationContext(session) {
+    const authorizations = (session.state.intent_ids || []).map((intentId) => {
+        const intent = getIntentById(intentId);
+        if (!intent || intent.status !== "approved" || new Date(intent.valid_until).getTime() <= Date.now()) return null;
+
+        let policy = null;
+        try {
+            policy = intent.policy_json ? JSON.parse(intent.policy_json) : null;
+        } catch {
+            policy = null;
+        }
+
+        const budget = getIntentBudgetState(intent.id, intent);
+        return {
+            intent_id: intent.id,
+            trace_id: intent.trace_id,
+            scope: intent.scope,
+            status: intent.status,
+            usage_mode: intent.usage_mode,
+            currency: intent.currency,
+            max_amount: Number(intent.max_amount),
+            committed_amount: budget.committed_amount,
+            remaining_amount: budget.remaining_amount,
+            policy,
+        };
+    }).filter(Boolean);
+
+    if (!authorizations.length) return null;
+    return {
+        active_intent_id: session.state.active_intent_id,
+        active_authorizations: authorizations,
+    };
 }
 
 
@@ -766,6 +881,8 @@ function updateSessionState(
         session.state.trace_id =
             data.trace_id;
 
+        session.state.traces_by_intent[data.id] = data.trace_id;
+
     }
 
 
@@ -783,16 +900,54 @@ if (
         session.state.cart_id =
             data.id;
 
+        if (!session.state.cart_ids.includes(data.id)) {
+            session.state.cart_ids.push(data.id);
+        }
+
+    }
+
+    if (functionCall.name === "create_checkout_preview") {
+        if (!session.state.checkout_ids.includes(data.checkout_id)) {
+            session.state.checkout_ids.push(data.checkout_id);
+        }
+    }
+
+    if (["create_checkout_intent", "attach_checkout_intent"].includes(functionCall.name)) {
+        const intent = data.intent || data;
+        if (intent?.id) {
+            session.state.intent_id = intent.id;
+            session.state.active_intent_id = intent.id;
+            if (!session.state.intent_ids.includes(intent.id)) session.state.intent_ids.push(intent.id);
+            if (intent.trace_id) session.state.traces_by_intent[intent.id] = intent.trace_id;
+        }
+    }
+
+    if (functionCall.name === "commit_checkout_cart") {
+        const cart = data.cart;
+        const intent = data.intent;
+        if (cart?.id) {
+            session.state.cart_id = cart.id;
+            if (!session.state.cart_ids.includes(cart.id)) session.state.cart_ids.push(cart.id);
+        }
+        if (intent?.id) {
+            session.state.intent_id = intent.id;
+            session.state.active_intent_id = intent.id;
+            if (intent.trace_id) session.state.traces_by_intent[intent.id] = intent.trace_id;
+        }
+        if (cart?.trace_id) session.state.trace_id = cart.trace_id;
     }
 
 
     if (
-        functionCall.name ===
-        "initiate_payment"
+        ["initiate_payment", "initiate_checkout_payment"].includes(functionCall.name)
     ) {
 
         session.state.payment_id =
             data.id;
+
+        if (!session.state.payment_ids.includes(data.id)) {
+            session.state.payment_ids.push(data.id);
+        }
 
         if (data.trace_id) {
             session.state.trace_id =
@@ -873,7 +1028,6 @@ function buildFastToolResponse(
 
         }
 
-
         case "initiate_payment":
             return data.already_exists
                 ? `A payment order already exists for Cart ${data.cart_id}.`
@@ -917,18 +1071,22 @@ function resolveToolCallForSession(
         functionCall.args?.trace_id;
 
 
-    // Current conversational transaction always uses
-    // the trusted trace stored by the backend session.
-    const traceId =
-        sessionTraceId ||
-        requestedTraceId;
+    // A model-supplied trace is accepted only when it belongs to this
+    // session. This lets users query an older active Intent without letting
+    // the model inspect an unrelated trace.
+    const ownedTraceIds = Object.values(session?.state?.traces_by_intent || {});
+    const traceId = requestedTraceId
+        ? (ownedTraceIds.includes(requestedTraceId) ? requestedTraceId : null)
+        : sessionTraceId;
 
 
     if (!traceId) {
 
         const error =
             new Error(
-                "No trace is associated with this chat session."
+                requestedTraceId
+                    ? "The requested trace does not belong to this chat session."
+                    : "No trace is associated with this chat session."
             );
 
         error.code =
@@ -1042,6 +1200,20 @@ function buildTraceContextForGemini(
 
                     valid_until:
                         trace.intent.valid_until,
+
+                    usage_mode:
+                        trace.intent.usage_mode,
+
+                    policy:
+                        (() => {
+                            try {
+                                return trace.intent.policy_json
+                                    ? JSON.parse(trace.intent.policy_json)
+                                    : null;
+                            } catch {
+                                return null;
+                            }
+                        })(),
 
                     status:
                         trace.intent.status,
@@ -1191,6 +1363,18 @@ function appendFunctionResultToHistory(
     functionCall,
     toolResult
 ) {
+
+    if (
+        functionCall.name === "create_checkout_intent" &&
+        session?.state?.explicit_existing_authorization
+    ) {
+        const error = new Error(
+            "The user explicitly requested an existing authorization. Attach that Intent or report its backend rejection; do not create another authorization."
+        );
+        error.code = "EXISTING_AUTHORIZATION_REQUIRED";
+        error.status = 409;
+        throw error;
+    }
 
     const functionResponse = {
 
@@ -1367,6 +1551,20 @@ async function buildConfirmation(
                     valid_until:
                         intent.valid_until,
 
+                    usage_mode:
+                        intent.usage_mode,
+
+                    policy:
+                        (() => {
+                            try {
+                                return intent.policy_json
+                                    ? JSON.parse(intent.policy_json)
+                                    : null;
+                            } catch {
+                                return null;
+                            }
+                        })(),
+
                 },
 
             };
@@ -1404,14 +1602,12 @@ async function buildConfirmation(
     // =====================================================
 
     if (
-        name ===
-        "initiate_payment"
+        ["initiate_payment", "initiate_checkout_payment"].includes(name)
     ) {
-
-        const cart =
-            getCartById(
-                args.cart_id
-            );
+        const checkout = name === "initiate_checkout_payment"
+            ? getCheckoutSession(args.checkout_id)
+            : null;
+        const cart = getCartById(checkout?.cart_id || args.cart_id);
 
 
         if (!cart) {
@@ -1471,6 +1667,9 @@ async function buildConfirmation(
 
                 cart_id:
                     cart.id,
+
+                checkout_id:
+                    checkout?.checkout_id,
 
                 trace_id:
                     cart.trace_id,
@@ -1540,7 +1739,8 @@ async function buildConfirmation(
 //
 
 function looksLikeConfirmation(
-    message
+    message,
+    action = null
 ) {
 
     if (
@@ -1568,12 +1768,6 @@ function looksLikeConfirmation(
             "confirmed",
             "approve",
             "approved",
-            "proceed",
-            "continue",
-            "go ahead",
-            "pay",
-            "pay now",
-            "yes pay",
             "haan",
             "ha",
             "haan karo",
@@ -1583,9 +1777,20 @@ function looksLikeConfirmation(
         ]);
 
 
-    return confirmations.has(
-        value
-    );
+    if (confirmations.has(value)) return true;
+
+    const paymentConfirmations = new Set(["pay", "pay now", "yes pay", "confirm payment"]);
+    const approvalConfirmations = new Set(["approve intent", "approve authorization", "yes approve"]);
+
+    if (["initiate_payment", "initiate_checkout_payment"].includes(action)) {
+        return paymentConfirmations.has(value);
+    }
+
+    if (action === "approve_intent") {
+        return approvalConfirmations.has(value);
+    }
+
+    return false;
 }
 
 
@@ -1909,8 +2114,7 @@ async function processGeminiResult({
     // decision that needs another Gemini inference.
     //
     if (
-        functionCall.name ===
-            "create_intent" &&
+        ["create_intent", "create_checkout_intent"].includes(functionCall.name) &&
         toolResult.success
     ) {
 
@@ -2007,13 +2211,6 @@ const confirmation =
         resolvedFunctionCall.name ===
         "get_trace"
     ) {
-
-        const toolResult =
-            await executeToolSafely(
-                resolvedFunctionCall
-            );
-
-
         // ---------------------------------------------
         // Tool failed
         // ---------------------------------------------
@@ -2308,8 +2505,9 @@ updateSessionState(
     // =========================================================
 
     if (
-        pending.call.name ===
-        "initiate_payment"
+        ["initiate_payment", "initiate_checkout_payment"].includes(
+            pending.call.name
+        )
     ) {
 
         // The payment fast path skips a second Gemini call, but
@@ -2501,6 +2699,9 @@ updateSessionState(
 
         clientAction,
 
+        policyViolation:
+            buildPolicyViolation(toolResult),
+
     });
 
 }
@@ -2548,8 +2749,9 @@ async function cancelPendingConfirmation(
     // =========================================================
 
     if (
-        pending.call.name ===
-        "initiate_payment"
+        ["initiate_payment", "initiate_checkout_payment"].includes(
+            pending.call.name
+        )
     ) {
 
         // Cancellation also closes Gemini's pending FunctionCall.
@@ -2696,7 +2898,8 @@ export async function handleChatMessage({
         if (
             confirm === true ||
             looksLikeConfirmation(
-                userMessage
+                userMessage,
+                session.pendingConfirmation.call?.name
             )
         ) {
 
@@ -2777,13 +2980,21 @@ export async function handleChatMessage({
 
     }
 
+    // This flag applies only to the current user turn and its tool loop.
+    // It prevents a failed attachment from being silently replaced by a new
+    // checkout Intent when the user said “this/same/existing authorization”.
+    session.state.explicit_existing_authorization =
+        /\b(this|same|existing|current)\s+authorization\b|\busing\s+(this|the same|my existing)\s+authorization\b/i.test(userMessage);
+
 
     const result =
         await runChatTurn(
 
             session.history,
 
-            userMessage
+            userMessage,
+
+            buildAuthorizationContext(session)
 
         );
 
